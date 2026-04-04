@@ -9,3 +9,15 @@ body {
   background: #f5f5f5;
   color: #1a1a1a;
 }
+
+/* Smooth focus ring for all inputs */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* Make the page scrollable on mobile */
+html, body {
+  height: 100%;
+}
