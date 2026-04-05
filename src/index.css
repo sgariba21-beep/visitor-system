@@ -26,3 +26,39 @@ html, body {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
 }
+
+/* ── Responsive: Admin sidebar collapses on small screens ── */
+@media (max-width: 768px) {
+  /* Stack sidebar above main content */
+  div[style*="display: flex"][style*="min-height: 100vh"] {
+    flex-direction: column;
+  }
+}
+
+/* ── Responsive: Dashboard two-column becomes one column ── */
+@media (max-width: 900px) {
+  .dashboard-two-col {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* ── Responsive: Stats grid shrinks gracefully ── */
+@media (max-width: 600px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* ── Better tap targets on mobile ── */
+@media (max-width: 768px) {
+  button {
+    min-height: 44px;
+  }
+}
+
+/* ── Prevent iOS Safari from zooming on input focus ── */
+@media (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}

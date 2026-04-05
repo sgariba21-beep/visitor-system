@@ -49,6 +49,10 @@ export default function GatePage() {
   const [walkInSearching, setWalkInSearching]           = useState(false);
   const [walkInSubmitting, setWalkInSubmitting]         = useState(false);
   const walkInSearchTimeout                             = useRef(null);
+
+  //Online/Offline State
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [installPrompt, setInstallPrompt] = useState(null);
   
   // ── Today's date string ─────────────────────────────────────────────────────
   // Used to validate QR codes — must match visit's visitDate
@@ -77,6 +81,61 @@ export default function GatePage() {
       setScreen("scanner");
     }
   }, []);
+
+  // ── PWA install prompt ───────────────────────────────────────────────────
+  // The browser fires this event when the app is installable.
+  // We save the event so we can trigger it ourselves with a button.
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault(); // prevent the browser's default mini-infobar
+      setInstallPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  async function handleInstall() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === "accepted") setInstallPrompt(null);
+  }
+
+  // ── Online/offline detection ─────────────────────────────────────────────
+  useEffect(() => {
+    const goOnline  = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online",  goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online",  goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  // ── Cache warming ────────────────────────────────────────────────────────
+  // As soon as the gate loads with internet, fetch today's visits.
+  // This populates Firestore's IndexedDB cache so that if internet
+  // drops later, recent visit documents are already available offline.
+  useEffect(() => {
+    if (screen === "pin") return; // wait until authenticated
+
+    async function warmCache() {
+      try {
+        const q = query(
+          collection(db, "visits"),
+          where("visitDate", "==", todayStr)
+        );
+        await getDocs(q);
+        console.log("Cache warmed: today's visits loaded.");
+      } catch (err) {
+        // If offline already, this will silently serve from cache anyway
+        console.log("Cache warm skipped (likely offline):", err.code);
+      }
+    }
+
+    warmCache();
+  }, [screen, todayStr]);
 
   // ────────────────────────────────────────────────────────────────────────────
   // SCANNER LOGIC
@@ -440,6 +499,13 @@ export default function GatePage() {
 
   return (
     <div style={styles.page}>
+      {/* ── Offline banner ── */}
+      {!isOnline && (
+        <div style={styles.offlineBanner}>
+          ⚠️ You are offline. Recent visit data is available from cache.
+          Check-ins will sync automatically when connection returns.
+        </div>
+      )}
 
       {/* ── Top bar ── */}
       <div style={styles.topBar}>
@@ -475,6 +541,12 @@ export default function GatePage() {
             }}
           >
             🔒
+          </button>
+        )}
+
+        {installPrompt && (
+          <button style={styles.installBtn} onClick={handleInstall}>
+            📲 Install
           </button>
         )}
       </div>
@@ -1048,6 +1120,11 @@ const styles = {
     background: "transparent", border: "none",
     fontSize: 18, cursor: "pointer",
   },
+  installBtn: {
+    padding: "6px 12px", background: "#2563eb", color: "#fff",
+    border: "none", borderRadius: 8, cursor: "pointer",
+    fontSize: 12, fontWeight: 600,
+  },
 
   // Centered wrapper for PIN + result screens
   centeredContent: {
@@ -1228,5 +1305,15 @@ const styles = {
   chipRemove: {
     background: "none", border: "none", color: "#475569",
     cursor: "pointer", fontSize: 13, padding: 0,
+  },
+
+  //Offline Banner
+  offlineBanner: {
+    background: "#78350f",
+    color: "#fef3c7",
+    padding: "10px 16px",
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 1.5,
   },
 };

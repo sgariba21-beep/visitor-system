@@ -1,18 +1,25 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 
-// Paste YOUR config from Firebase console here
 const firebaseConfig = {
-  apiKey: "AIzaSyB6iQyE0jPrOLarAaMlibERF8nTvLpPY3c",
-  authDomain: "school-visitor-system-2da08.firebaseapp.com",
-  projectId: "school-visitor-system-2da08",
-  storageBucket: "school-visitor-system-2da08.firebasestorage.app",
-  messagingSenderId: "626492335224",
-  appId: "1:626492335224:web:35757c5073cafa7ad6398d"
+  apiKey:            process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain:        process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId:         process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket:     process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             process.env.REACT_APP_FIREBASE_APP_ID,
 };
 
 const app = initializeApp(firebaseConfig);
 
-export const db = getFirestore(app);
+export const db   = getFirestore(app);
 export const auth = getAuth(app);
+
+enableIndexedDbPersistence(db).catch((err) => {
+  if (err.code === "failed-precondition") {
+    console.warn("Firestore persistence unavailable: multiple tabs open.");
+  } else if (err.code === "unimplemented") {
+    console.warn("Firestore persistence not supported in this browser.");
+  }
+});
