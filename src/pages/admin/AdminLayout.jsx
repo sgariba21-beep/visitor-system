@@ -4,8 +4,9 @@ import { auth } from "../../firebase";
 import { useAuth } from "../../hooks/useAuth";
 
 const navItems = [
-  { to: "/admin/students",  label: "Students",  icon: "🎓" },
   { to: "/admin/dashboard", label: "Dashboard", icon: "📊" },
+  { to: "/admin/students",  label: "Students",  icon: "🎓" },
+  { to: "/admin/visits",    label: "Visit History", icon: "📋" },
 ];
 
 export default function AdminLayout() {

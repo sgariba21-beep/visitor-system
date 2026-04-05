@@ -6,6 +6,7 @@ import AdminLayout    from "./pages/admin/AdminLayout";
 import StudentsPage   from "./pages/admin/StudentsPage";
 import DashboardPage  from "./pages/admin/DashboardPage";
 import ProtectedRoute from "./components/ProtectedRoute";
+import VisitsPage from "./pages/admin/VisitsPage";
 
 export default function App() {
   return (
@@ -21,8 +22,9 @@ export default function App() {
             <AdminLayout />
           </ProtectedRoute>
         }>
-          <Route path="students"  element={<StudentsPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="students"  element={<StudentsPage />} />
+          <Route path="visits"    element={<VisitsPage />} />
         </Route>
 
         {/* Gate (will be protected differently — PIN based) */}

@@ -821,7 +821,7 @@ export default function GatePage() {
                     required
                   >
                     <option value="">— Select —</option>
-                    {["General Visit","Academic Concerns","Medical",
+                    {["General Visit","Academic Concerns","Medical","General Visit",
                       "Financial","Pickup / Leave","Other"].map(p => (
                       <option key={p} value={p}>{p}</option>
                     ))}
