@@ -690,23 +690,27 @@ export default function GatePage() {
                 </p>
 
                 <form onSubmit={handleManualSearch} style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input
-                      style={{ ...styles.darkInput, flex: 1 }}
-                      value={manualQuery}
-                      onChange={e => setManualQuery(e.target.value)}
-                      placeholder="Name, phone or student..."
-                      autoFocus
-                    />
-                    <button
-                      type="submit"
-                      style={styles.btnPrimary}
-                      disabled={manualSearching}
-                    >
-                      {manualSearching ? "..." : "Search"}
-                    </button>
-                  </div>
-                </form>
+                <input
+                  style={{
+                    ...styles.darkInput,
+                    width: "100%",
+                    marginBottom: 8,
+                    color: "#f8fafc",
+                    caretColor: "#f8fafc",
+                  }}
+                  value={manualQuery}
+                  onChange={e => setManualQuery(e.target.value)}
+                  placeholder="Name, phone or student..."
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  style={{ ...styles.btnPrimary, width: "100%" }}
+                  disabled={manualSearching}
+                >
+                  {manualSearching ? "Searching..." : "Search"}
+                </button>
+              </form>
 
                 {/* Error / no results */}
                 {manualError && (
@@ -1194,7 +1198,8 @@ const styles = {
   darkInput: {
     width: "100%", padding: "10px 12px", fontSize: 14,
     background: "#0f172a", border: "1.5px solid #334155",
-    borderRadius: 8, color: "#f8fafc",
+    borderRadius: 8, color: "#f8fafc", caretColor: "#f8fafc",
+    WebkitTextFillColor: "#f8fafc",
   },
   darkDropdown: {
     position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
