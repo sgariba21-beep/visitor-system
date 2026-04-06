@@ -102,7 +102,7 @@ export default function VisitsPage() {
   };
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} className="admin-page">
 
       {/* ── Header ── */}
       <div style={styles.header}>

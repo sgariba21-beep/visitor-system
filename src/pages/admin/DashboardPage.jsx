@@ -64,7 +64,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} className="admin-page">
 
       {/* ── Page header ── */}
       <div style={styles.header}>
@@ -242,7 +242,11 @@ const styles = {
     gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
     gap: 16, marginBottom: 28,
   },
-  twoCol:    { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 },
+  twoCol: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+    gap: 20,
+  },
   panel:     {
     background: "#fff", borderRadius: 16,
     border: "1px solid #e5e7eb",

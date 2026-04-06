@@ -237,7 +237,7 @@ export default function StudentsPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div style={styles.page}>
+    <div style={styles.page} className="admin-page">
 
       {/* ── Page header ── */}
       <div style={styles.header}>

@@ -62,3 +62,11 @@ html, body {
     font-size: 16px !important;
   }
 }
+
+/* Tighten page padding on mobile */
+@media (max-width: 768px) {
+  /* Targets the page wrapper div in each admin page */
+  .admin-page {
+    padding: 16px !important;
+  }
+}
