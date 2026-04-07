@@ -8,6 +8,8 @@ import DashboardPage  from "./pages/admin/DashboardPage";
 import ProtectedRoute from "./components/ProtectedRoute";
 import VisitsPage from "./pages/admin/VisitsPage";
 
+console.log("APP RENDERING");
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -22,6 +24,7 @@ export default function App() {
             <AdminLayout />
           </ProtectedRoute>
         }>
+          <Route index element={<DashboardPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="students"  element={<StudentsPage />} />
           <Route path="visits"    element={<VisitsPage />} />

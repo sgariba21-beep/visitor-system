@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../../firebase";
@@ -10,10 +10,38 @@ const navItems = [
   { to: "/admin/visits",    label: "Visit History", icon: "📋" },
 ];
 
+// ─── Reactive media query hook ────────────────────────────────────────────────
+// Returns true/false and updates whenever the window is resized.
+// This is the correct way to do JS-driven responsive layouts in React.
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() =>
+    // initialise synchronously so the first render is already correct
+    window.matchMedia(query).matches
+  );
+
+  useEffect(() => {
+    const mql     = window.matchMedia(query);
+    const handler = (e) => setMatches(e.matches);
+
+    // Modern API
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [query]);
+
+  return matches;
+}
+
 export default function AdminLayout() {
-  const { user }      = useAuth();
-  const navigate      = useNavigate();
+  const { user }   = useAuth();
+  const navigate   = useNavigate();
+  const isMobile   = useMediaQuery("(max-width: 767px)");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Close sidebar whenever we switch from mobile to desktop
+  // (e.g. user rotates device or resizes browser)
+  useEffect(() => {
+    if (!isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
   async function handleLogout() {
     await signOut(auth);
@@ -25,41 +53,40 @@ export default function AdminLayout() {
   }
 
   return (
-    <div style={styles.shell}>
+    <div style={styles.shell(isMobile)}>
 
-      {/* ── Mobile top bar (hidden on desktop) ── */}
-      <div style={styles.mobileTopBar}>
-        <button
-          style={styles.hamburger}
-          onClick={() => setSidebarOpen(prev => !prev)}
-          aria-label="Toggle menu"
-        >
-          {sidebarOpen ? "✕" : "☰"}
-        </button>
-        <span style={styles.mobileBrand}>🏫 VMS Admin</span>
-        <button style={styles.mobileLogout} onClick={handleLogout}>
-          Sign Out
-        </button>
-      </div>
+      {/* ── Mobile top bar ── */}
+      {isMobile && (
+        <div style={styles.mobileTopBar}>
+          <button
+            style={styles.hamburger}
+            onClick={() => setSidebarOpen(prev => !prev)}
+            aria-label="Toggle menu"
+          >
+            {sidebarOpen ? "✕" : "☰"}
+          </button>
+          <span style={styles.mobileBrand}>🏫 VMS Admin</span>
+          <button style={styles.mobileLogout} onClick={handleLogout}>
+            Sign Out
+          </button>
+        </div>
+      )}
 
-      {/* ── Overlay (mobile only — tap outside to close sidebar) ── */}
-      {sidebarOpen && (
+      {/* ── Overlay (mobile only) ── */}
+      {isMobile && sidebarOpen && (
         <div style={styles.overlay} onClick={closeSidebar} />
       )}
 
       {/* ── Sidebar ── */}
-      <aside style={{
-        ...styles.sidebar,
-        // On mobile: slide in/out. On desktop: always visible.
-        transform: sidebarOpen
-          ? "translateX(0)"
-          : "translateX(-100%)",
-      }}>
-        {/* Desktop brand (hidden on mobile — mobile has top bar) */}
-        <div style={styles.brand}>
-          <span style={{ fontSize: 24 }}>🏫</span>
-          <span style={styles.brandName}>VMS Admin</span>
-        </div>
+      <aside style={styles.sidebar(isMobile, sidebarOpen)}>
+
+        {/* Desktop brand header */}
+        {!isMobile && (
+          <div style={styles.brand}>
+            <span style={{ fontSize: 24 }}>🏫</span>
+            <span style={styles.brandName}>VMS Admin</span>
+          </div>
+        )}
 
         <nav style={styles.nav}>
           {navItems.map(item => (
@@ -97,21 +124,18 @@ export default function AdminLayout() {
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-// We detect mobile vs desktop using a CSS custom property approach.
-// The breakpoint is 768px.
-const isMobile = window.innerWidth < 768;
-
+// Styles that depend on isMobile are now functions rather than static objects.
+// They're called at render time with the current value, so they're always correct.
 const styles = {
-  shell: {
+
+  shell: (isMobile) => ({
     display: "flex",
     minHeight: "100vh",
-    // On mobile, stack vertically. On desktop, side by side.
     flexDirection: isMobile ? "column" : "row",
-  },
+  }),
 
-  // ── Mobile top bar ──────────────────────────────────────────────────────────
   mobileTopBar: {
-    display: isMobile ? "flex" : "none",
+    display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     padding: "12px 16px",
@@ -138,37 +162,36 @@ const styles = {
     cursor: "pointer",
   },
 
-  // ── Overlay ─────────────────────────────────────────────────────────────────
   overlay: {
     position: "fixed", inset: 0,
     background: "rgba(0,0,0,0.5)",
     zIndex: 299,
-    display: isMobile ? "block" : "none",
   },
 
-  // ── Sidebar ─────────────────────────────────────────────────────────────────
-  sidebar: {
+  sidebar: (isMobile, sidebarOpen) => ({
     width: 220,
     background: "#0f172a",
     display: "flex",
     flexDirection: "column",
     padding: "24px 0",
     flexShrink: 0,
-    // Desktop: normal flow. Mobile: fixed overlay that slides in.
+    // Mobile: fixed overlay that slides in from the left
+    // Desktop: normal flow, always visible
     ...(isMobile ? {
       position: "fixed",
       top: 0, left: 0, bottom: 0,
       zIndex: 300,
+      transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)",
       transition: "transform 0.25s ease",
       paddingTop: 16,
     } : {
-      // Desktop: always visible, no transform needed
-      transform: "none !important",
+      position: "relative",
+      transform: "none",
     }),
-  },
+  }),
 
   brand: {
-    display: isMobile ? "none" : "flex",
+    display: "flex",
     alignItems: "center", gap: 10,
     padding: "0 20px 24px",
     borderBottom: "1px solid #1e293b",
@@ -201,11 +224,9 @@ const styles = {
     cursor: "pointer", fontSize: 13,
   },
 
-  // ── Main content ─────────────────────────────────────────────────────────────
   main: {
     flex: 1,
     overflowX: "hidden",
-    // On mobile, take full width. On desktop, sit beside sidebar.
     minWidth: 0,
   },
 };
