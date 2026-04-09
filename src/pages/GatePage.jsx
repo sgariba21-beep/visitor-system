@@ -11,6 +11,17 @@ import { Html5Qrcode } from "html5-qrcode";
 const CORRECT_PIN    = process.env.REACT_APP_GATE_PIN || "1234";
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
 
+// Races a Firestore write against a timeout.
+// Offline, Firestore Promises hang indefinitely (the write IS queued
+// locally, but server confirmation never arrives). This lets the UI
+// move on after 2.5 s, trusting Firestore's offline persistence to sync later.
+function withOfflineTimeout(promise, ms = 2500) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(resolve, ms)),
+  ]);
+}
+
 export default function GatePage() {
 
   // ── Screen state ────────────────────────────────────────────────────────────
@@ -50,9 +61,12 @@ export default function GatePage() {
   const [walkInSubmitting, setWalkInSubmitting]         = useState(false);
   const walkInSearchTimeout                             = useRef(null);
 
-  //Online/Offline State
+  // Online/Offline State
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [installPrompt, setInstallPrompt] = useState(null);
+
+  // Cache State
+  const [cacheStatus, setCacheStatus] = useState("idle"); // "idle"|"warming"|"ready"|"failed"
   
   // ── Today's date string ─────────────────────────────────────────────────────
   // Used to validate QR codes — must match visit's visitDate
@@ -114,27 +128,44 @@ export default function GatePage() {
   }, []);
 
   // ── Cache warming ────────────────────────────────────────────────────────
-  // As soon as the gate loads with internet, fetch today's visits.
-  // This populates Firestore's IndexedDB cache so that if internet
-  // drops later, recent visit documents are already available offline.
+  // Waits a moment for Firestore's persistence layer to initialise,
+  // then fetches today's visits AND active students into IndexedDB.
   useEffect(() => {
-    if (screen === "pin") return; // wait until authenticated
+    if (screen === "pin") return;
 
-    async function warmCache() {
+    setCacheStatus("warming");
+
+    const timer = setTimeout(async () => {
+      let visitsOk = false;
+      let studentsOk = false;
+
       try {
-        const q = query(
+        await getDocs(query(
           collection(db, "visits"),
           where("visitDate", "==", todayStr)
-        );
-        await getDocs(q);
+        ));
+        visitsOk = true;
         console.log("Cache warmed: today's visits loaded.");
       } catch (err) {
-        // If offline already, this will silently serve from cache anyway
-        console.log("Cache warm skipped (likely offline):", err.code);
+        console.log("Visits cache warm skipped (likely offline):", err.code);
       }
-    }
 
-    warmCache();
+      try {
+        await getDocs(query(
+          collection(db, "students"),
+          where("isActive", "==", true),
+          orderBy("name")
+        ));
+        studentsOk = true;
+        console.log("Cache warmed: students loaded.");
+      } catch (err) {
+        console.log("Students cache warm skipped (likely offline):", err.code);
+      }
+
+      setCacheStatus(visitsOk && studentsOk ? "ready" : "failed");
+    }, 1500);
+
+    return () => clearTimeout(timer);
   }, [screen, todayStr]);
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -280,25 +311,26 @@ export default function GatePage() {
       const ref = doc(db, "visits", visitDocId);
 
       if (visitDoc.status === "registered") {
-        // ── CHECK IN ────────────────────────────────────────────────────────
-        await updateDoc(ref, {
-          status:      "checked_in",
-          checkedInAt: serverTimestamp(),
-        });
+        // ── CHECK IN ──────────────────────────────────────────────────────────
+        // Optimistic update first — UI responds immediately even offline
         setVisitDoc(prev => ({ ...prev, status: "checked_in" }));
         setActionFeedback({ type: "success", message: "✅ Checked in successfully. Welcome!" });
+        await withOfflineTimeout(updateDoc(ref, {
+          status:      "checked_in",
+          checkedInAt: Timestamp.now(),   // client-side timestamp — not overwritten on sync
+        }));
 
       } else if (visitDoc.status === "checked_in") {
-        // ── CHECK OUT ───────────────────────────────────────────────────────
-        await updateDoc(ref, {
-          status:       "checked_out",
-          checkedOutAt: serverTimestamp(),
-        });
+        // ── CHECK OUT ─────────────────────────────────────────────────────────
         setVisitDoc(prev => ({ ...prev, status: "checked_out" }));
         setActionFeedback({ type: "success", message: "👋 Checked out successfully. Safe travels!" });
+        await withOfflineTimeout(updateDoc(ref, {
+          status:       "checked_out",
+          checkedOutAt: Timestamp.now(),  // client-side timestamp — not overwritten on sync
+        }));
 
       } else {
-        // ── ALREADY CHECKED OUT ─────────────────────────────────────────────
+        // ── ALREADY CHECKED OUT ───────────────────────────────────────────────
         setActionFeedback({ type: "info", message: "This visit is already complete." });
       }
 
@@ -504,6 +536,23 @@ export default function GatePage() {
         <div style={styles.offlineBanner}>
           ⚠️ You are offline. Recent visit data is available from cache.
           Check-ins will sync automatically when connection returns.
+        </div>
+      )}
+      
+      {/* ── Cache status banner ── */}
+      {isOnline && cacheStatus === "warming" && (
+        <div style={{ ...styles.offlineBanner, background: "#1e3a5f", color: "#93c5fd" }}>
+          ⏳ Loading offline cache — please stay connected for a moment...
+        </div>
+      )}
+      {isOnline && cacheStatus === "ready" && (
+        <div style={{ ...styles.offlineBanner, background: "#14532d", color: "#86efac" }}>
+          ✅ Offline cache ready — safe to disconnect from WiFi
+        </div>
+      )}
+      {cacheStatus === "failed" && (
+        <div style={{ ...styles.offlineBanner, background: "#78350f", color: "#fef3c7" }}>
+          ⚠️ Cache not loaded — stay connected or reconnect WiFi before going offline
         </div>
       )}
 
