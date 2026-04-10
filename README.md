@@ -147,7 +147,7 @@ Requires a `.firebaserc` pointing to your Firebase project. The hosting config i
 |-------|------|-------------|
 | `name` | string | Student full name |
 | `class` | string | Class/grade (e.g. "Form 3A") |
-| `studentCode` | string | Optional unique identifier |
+| `studentId` | string | Unique student identifier (required for visitor verification) |
 | `isActive` | boolean | Controls visibility in registration search |
 | `createdAt` | Timestamp | When added |
 
@@ -158,12 +158,12 @@ Requires a `.firebaserc` pointing to your Firebase project. The hosting config i
 The Students page supports bulk import. CSV must have these headers:
 
 ```csv
-name,class,studentCode
+name,class,studentId
 Alice Johnson,Form 3A,STU-001
 Bob Smith,Primary 5,STU-002
 ```
 
-`studentCode` is optional.
+`studentId` is required for visitors to verify students during registration.
 
 ---
 

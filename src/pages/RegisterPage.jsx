@@ -44,6 +44,14 @@ export default function RegisterPage() {
   const [searching, setSearching]             = useState(false);
   const searchTimeout                         = useRef(null);   // for debouncing
 
+  // ── Student ID verification state ────────────────────────────────────────────
+  const [pendingStudent, setPendingStudent] = useState(null);  // student awaiting ID verification
+  const [idInput, setIdInput]               = useState("");    // what the visitor typed
+  const [idError, setIdError]               = useState("");    // per-attempt error message
+  const [failedAttempts, setFailedAttempts] = useState(0);     // session-wide counter
+  const [lockedOut, setLockedOut]           = useState(false); // true after 3 failures
+  const MAX_ATTEMPTS = 3;
+
   // ── Page state ──────────────────────────────────────────────────────────────
   const [submitting, setSubmitting]   = useState(false);
   const [error, setError]             = useState("");
@@ -106,11 +114,60 @@ export default function RegisterPage() {
     }
   }
 
-  // ── Add a student to the selected list ─────────────────────────────────────
+  // ── Add a student to the selected list (now requires ID verification) ──────
   function selectStudent(student) {
-    setSelectedStudents(prev => [...prev, student]);
+    if (lockedOut) return;
+
+    // Block students without a studentId
+    if (!student.studentId && !student.studentCode) {
+      setError("This student does not have a Student ID configured. Please contact the school.");
+      setSearchQuery("");
+      setSearchResults([]);
+      return;
+    }
+
+    // Open verification prompt instead of adding immediately
+    setPendingStudent(student);
+    setIdInput("");
+    setIdError("");
     setSearchQuery("");
     setSearchResults([]);
+  }
+
+  // ── Verify the student ID the visitor typed ────────────────────────────────
+  function verifyStudentId() {
+    if (!pendingStudent) return;
+
+    const correctId = (pendingStudent.studentId || pendingStudent.studentCode || "").toLowerCase();
+    if (idInput.trim().toLowerCase() === correctId) {
+      // Correct — add student to selected list
+      setSelectedStudents(prev => [...prev, pendingStudent]);
+      setPendingStudent(null);
+      setIdInput("");
+      setIdError("");
+    } else {
+      // Incorrect
+      const newCount = failedAttempts + 1;
+      setFailedAttempts(newCount);
+
+      if (newCount >= MAX_ATTEMPTS) {
+        setLockedOut(true);
+        setPendingStudent(null);
+        setIdInput("");
+        setIdError("");
+      } else {
+        setIdError(
+          `Incorrect Student ID. ${MAX_ATTEMPTS - newCount} attempt(s) remaining.`
+        );
+        setIdInput("");
+      }
+    }
+  }
+
+  function cancelVerification() {
+    setPendingStudent(null);
+    setIdInput("");
+    setIdError("");
   }
 
   // ── Remove a student from the selected list ─────────────────────────────────
@@ -203,6 +260,11 @@ export default function RegisterPage() {
     setSearchResults([]);
     setSuccessData(null);
     setError("");
+    setFailedAttempts(0);
+    setLockedOut(false);
+    setPendingStudent(null);
+    setIdInput("");
+    setIdError("");
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -389,15 +451,64 @@ export default function RegisterPage() {
               </div>
             )}
 
+            {/* Lockout banner */}
+            {lockedOut && (
+              <div style={styles.lockoutBox}>
+                Registration locked due to too many failed verification attempts.
+                Please visit the school office for assistance.
+              </div>
+            )}
+
+            {/* Student ID verification prompt */}
+            {pendingStudent && !lockedOut && (
+              <div style={styles.verifyBox}>
+                <p style={styles.verifyTitle}>
+                  Verify Student Identity
+                </p>
+                <p style={styles.verifyInfo}>
+                  You selected <strong>{pendingStudent.name}</strong> ({pendingStudent.class}).
+                  Please enter their Student ID to confirm.
+                </p>
+                <input
+                  style={styles.input}
+                  value={idInput}
+                  onChange={e => setIdInput(e.target.value)}
+                  placeholder="Enter Student ID..."
+                  autoFocus
+                  onKeyDown={e => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      verifyStudentId();
+                    }
+                  }}
+                />
+                {idError && (
+                  <p style={styles.verifyError}>{idError}</p>
+                )}
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button type="button" style={styles.btnCancel} onClick={cancelVerification}>
+                    Cancel
+                  </button>
+                  <button type="button" style={styles.btnVerify} onClick={verifyStudentId}>
+                    Verify
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Search input */}
             <Field label="Search for a student">
               <div style={{ position: "relative" }}>
                 <input
-                  style={styles.input}
+                  style={{
+                    ...styles.input,
+                    ...(lockedOut || pendingStudent ? { opacity: 0.5, pointerEvents: "none" } : {}),
+                  }}
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder="Type student name or class..."
                   autoComplete="off"
+                  disabled={lockedOut || !!pendingStudent}
                 />
 
                 {/* Dropdown results */}
@@ -438,7 +549,8 @@ export default function RegisterPage() {
             </Field>
 
             <p style={styles.hint}>
-              💡 You can add multiple students — search and click each one.
+              💡 Search for a student, then verify their Student ID to add them.
+              You can add multiple students one at a time.
             </p>
 
           </Section>
@@ -455,10 +567,10 @@ export default function RegisterPage() {
             type="submit"
             style={{
               ...styles.btnPrimary,
-              opacity: submitting ? 0.7 : 1,
-              cursor: submitting ? "not-allowed" : "pointer",
+              opacity: (submitting || lockedOut) ? 0.7 : 1,
+              cursor: (submitting || lockedOut) ? "not-allowed" : "pointer",
             }}
-            disabled={submitting}
+            disabled={submitting || lockedOut}
           >
             {submitting ? "Submitting..." : "Complete Registration →"}
           </button>
@@ -581,6 +693,36 @@ const styles = {
   },
 
   hint: { fontSize: 13, color: "#9ca3af", marginTop: 8 },
+
+  // Verification prompt
+  verifyBox: {
+    background: "#fff7ed", border: "1.5px solid #fed7aa",
+    borderRadius: 12, padding: "16px 18px", marginBottom: 16,
+  },
+  verifyTitle: {
+    fontSize: 15, fontWeight: 700, color: "#9a3412", marginBottom: 6,
+  },
+  verifyInfo: {
+    fontSize: 13, color: "#78350f", marginBottom: 12, lineHeight: 1.5,
+  },
+  verifyError: {
+    color: "#dc2626", fontSize: 13, marginTop: 8, fontWeight: 500,
+  },
+  btnCancel: {
+    padding: "8px 16px", background: "transparent", border: "1px solid #d1d5db",
+    borderRadius: 8, color: "#6b7280", cursor: "pointer", fontSize: 13,
+  },
+  btnVerify: {
+    padding: "8px 16px", background: "#2563eb", color: "#fff",
+    border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+  },
+
+  // Lockout
+  lockoutBox: {
+    background: "#fef2f2", border: "1.5px solid #fca5a5",
+    color: "#991b1b", padding: "14px 16px", borderRadius: 10,
+    fontSize: 14, fontWeight: 500, marginBottom: 16, lineHeight: 1.5,
+  },
 
   // Error
   errorBox: {

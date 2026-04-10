@@ -22,7 +22,7 @@ export default function StudentsPage() {
   const [feedback, setFeedback]   = useState(null);  // { type, message }
 
   // Form state (shared between add and edit)
-  const [form, setForm] = useState({ name: "", class: "", studentCode: "" });
+  const [form, setForm] = useState({ name: "", class: "", studentId: "" });
 
   // CSV import state
   const [csvRows, setCsvRows]       = useState([]);  // parsed rows preview
@@ -55,7 +55,7 @@ export default function StudentsPage() {
 
   // ── Form helpers ───────────────────────────────────────────────────────────
   function openAdd() {
-    setForm({ name: "", class: "", studentCode: "" });
+    setForm({ name: "", class: "", studentId: "" });
     setEditTarget(null);
     setMode("add");
   }
@@ -64,7 +64,7 @@ export default function StudentsPage() {
     setForm({ 
       name: student.name, 
       class: student.class, 
-      studentCode: student.studentCode 
+      studentId: student.studentId || student.studentCode || ""
     });
     setEditTarget(student);
     setMode("edit");
@@ -84,7 +84,7 @@ export default function StudentsPage() {
       const docRef = await addDoc(collection(db, "students"), {
         name:        form.name.trim(),
         class:       form.class.trim(),
-        studentCode: form.studentCode.trim(),
+        studentId:   form.studentId.trim(),
         isActive:    true,
         createdAt:   serverTimestamp(),
       });
@@ -108,7 +108,7 @@ export default function StudentsPage() {
       await updateDoc(ref, {
         name:        form.name.trim(),
         class:       form.class.trim(),
-        studentCode: form.studentCode.trim(),
+        studentId:   form.studentId.trim(),
       });
       setStudents(prev => prev.map(s =>
         s.id === editTarget.id ? { ...s, ...form } : s
@@ -172,7 +172,7 @@ export default function StudentsPage() {
   }
 
   // ── CSV Import ─────────────────────────────────────────────────────────────
-  // Expected CSV columns: name, class, studentCode (header row required)
+  // Expected CSV columns: name, class, studentId (header row required)
   function handleCsvFile(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -189,7 +189,7 @@ export default function StudentsPage() {
         if (missing.length > 0) {
           showFeedback("error", 
             `CSV missing columns: ${missing.join(", ")}. ` +
-            `Required: name, class. Optional: studentCode`
+            `Required: name, class. Optional: studentId`
           );
           setCsvRows([]);
           return;
@@ -210,7 +210,7 @@ export default function StudentsPage() {
         await addDoc(collection(db, "students"), {
           name:        row.name.trim(),
           class:       row.class.trim(),
-          studentCode: row.studentCode?.trim() || "",
+          studentId:   (row.studentId || row.studentCode)?.trim() || "",
           isActive:    true,
           createdAt:   serverTimestamp(),
         });
@@ -232,7 +232,7 @@ export default function StudentsPage() {
   const filtered = students.filter(s =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     s.class.toLowerCase().includes(search.toLowerCase()) ||
-    (s.studentCode || "").toLowerCase().includes(search.toLowerCase())
+    (s.studentId || s.studentCode || "").toLowerCase().includes(search.toLowerCase())
   );
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -304,12 +304,13 @@ export default function StudentsPage() {
               />
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Student Code</label>
+              <label style={styles.label}>Student ID *</label>
               <input
                 style={styles.input}
-                value={form.studentCode}
-                onChange={e => setForm(p => ({ ...p, studentCode: e.target.value }))}
-                placeholder="STU-001 (optional)"
+                value={form.studentId}
+                onChange={e => setForm(p => ({ ...p, studentId: e.target.value }))}
+                placeholder="e.g. STU-001"
+                required
               />
             </div>
             <div style={styles.formActions}>
@@ -334,7 +335,7 @@ export default function StudentsPage() {
                 <tr>
                   <th style={styles.th}>Name</th>
                   <th style={styles.th}>Class</th>
-                  <th style={styles.th}>Student Code</th>
+                  <th style={styles.th}>Student ID</th>
                 </tr>
               </thead>
               <tbody>
@@ -342,7 +343,7 @@ export default function StudentsPage() {
                   <tr key={i}>
                     <td style={styles.td}>{row.name}</td>
                     <td style={styles.td}>{row.class}</td>
-                    <td style={styles.td}>{row.studentCode || "—"}</td>
+                    <td style={styles.td}>{row.studentId || row.studentCode || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -368,7 +369,7 @@ export default function StudentsPage() {
       {mode === "list" && (
         <input
           style={{ ...styles.input, marginBottom: 16, maxWidth: 360 }}
-          placeholder="🔍  Search by name, class, or code..."
+          placeholder="🔍  Search by name, class, or ID..."
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -386,7 +387,7 @@ export default function StudentsPage() {
               <tr>
                 <th style={styles.th}>Name</th>
                 <th style={styles.th}>Class</th>
-                <th style={styles.th}>Code</th>
+                <th style={styles.th}>ID</th>
                 <th style={styles.th}>Status</th>
                 <th style={styles.th}>Actions</th>
               </tr>
@@ -407,7 +408,7 @@ export default function StudentsPage() {
                   }}>
                     <td style={styles.td}>{student.name}</td>
                     <td style={styles.td}>{student.class}</td>
-                    <td style={styles.td}>{student.studentCode || "—"}</td>
+                    <td style={styles.td}>{student.studentId || student.studentCode || "—"}</td>
                     <td style={styles.td}>
                       <span style={{
                         ...styles.badge,
