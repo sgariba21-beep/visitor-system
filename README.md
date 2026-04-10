@@ -1,70 +1,227 @@
-# Getting Started with Create React App
+# Visitor Management System
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A progressive web app (PWA) for managing school visitors — from parent pre-registration and QR-based gate check-in/out, to real-time admin dashboards and visit history analytics.
 
-## Available Scripts
+Built with **React 19** and **Firebase**, with an offline-first gate scanning experience designed to work reliably on school networks.
 
-In the project directory, you can run:
+---
 
-### `npm start`
+## Features
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### For Parents / Visitors
+- Pre-register a visit online (no account required)
+- Search for the student(s) being visited by name or class
+- Select visit date, purpose, and relationship
+- Receive a unique QR code token (`VIS-XXXXXX`) to present at the gate
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+### For Gate Staff
+- Scan QR codes with a phone camera (or manually look up a visitor)
+- Check visitors in on arrival and out on departure
+- Register walk-in visitors on the spot
+- Works offline — caches today's visits locally and syncs when reconnected
+- Installable as a home screen app (PWA)
 
-### `npm test`
+### For Administrators
+- **Live Dashboard** — real-time visitor counts (on campus, checked out, walk-ins, not yet arrived)
+- **Student Management** — add/edit/deactivate students, bulk import via CSV
+- **Visit History** — search and filter by date range, status, purpose, or visitor/student name
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+## Tech Stack
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19, React Router 7 |
+| Database | Firebase Firestore (with IndexedDB offline persistence) |
+| Auth | Firebase Authentication (email/password) |
+| QR Scanning | html5-qrcode |
+| QR Generation | qrcode.react |
+| CSV Import | PapaParse |
+| Hosting | Firebase Hosting |
+| PWA | Service Worker (cache-first assets, network-first HTML) |
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+## App Structure
 
-### `npm run eject`
+```
+/register     — Parent/visitor pre-registration (public)
+/login        — Staff login (public)
+/gate         — Gate scanning hub (PIN-protected)
+/admin        — Admin area (requires Firebase Auth)
+  /dashboard  — Live stats
+  /students   — Student management
+  /visits     — Visit history
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+---
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+## Getting Started
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+### Prerequisites
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+- Node.js 18+
+- A Firebase project with Firestore and Authentication enabled
 
-## Learn More
+### Installation
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```bash
+git clone https://github.com/your-org/visitor-system.git
+cd visitor-system
+npm install
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### Environment Variables
 
-### Code Splitting
+Create a `.env` file in the project root:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```env
+REACT_APP_GATE_PIN=1234
 
-### Analyzing the Bundle Size
+REACT_APP_FIREBASE_API_KEY=your_api_key
+REACT_APP_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+REACT_APP_FIREBASE_PROJECT_ID=your_project_id
+REACT_APP_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
+REACT_APP_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+REACT_APP_FIREBASE_APP_ID=your_app_id
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+`REACT_APP_GATE_PIN` is the 4-digit PIN gate staff use to unlock the scanner screen.
 
-### Making a Progressive Web App
+### Running Locally
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+```bash
+npm start
+```
 
-### Advanced Configuration
+Opens at [http://localhost:3000](http://localhost:3000).
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+---
 
-### Deployment
+## Deployment
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### Build
 
-### `npm run build` fails to minify
+```bash
+npm run build
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+### Deploy to Firebase Hosting
+
+```bash
+npm install -g firebase-tools
+firebase login
+firebase deploy
+```
+
+Requires a `.firebaserc` pointing to your Firebase project. The hosting config in `firebase.json` handles SPA routing rewrites and cache headers (1-year immutable for JS/CSS assets, no-cache for `index.html` and `sw.js`).
+
+---
+
+## Firestore Data Model
+
+### `visits` collection
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `visitorName` | string | Full name of the visitor |
+| `visitorPhone` | string | Contact number |
+| `relationship` | string | Relationship to student(s) |
+| `purpose` | string | Reason for visit (8 categories + Other) |
+| `purposeOther` | string | Free-text if purpose is "Other" |
+| `students` | array | Snapshot of visited student(s) — `{studentId, studentName, class}` |
+| `visitDate` | string | `YYYY-MM-DD` — QR only activates on this date |
+| `status` | string | `registered` → `checked_in` → `checked_out` |
+| `qrToken` | string | Unique token e.g. `VIS-A3X9K2` |
+| `registeredAt` | Timestamp | When registration was submitted |
+| `checkedInAt` | Timestamp | Arrival scan time |
+| `checkedOutAt` | Timestamp | Departure scan time |
+| `createdBy` | string | `"self"` (parent) or `"gate_staff"` (walk-in) |
+
+> Student details are stored as a snapshot in each visit record so visit history remains intact even if a student is later removed.
+
+### `students` collection
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Student full name |
+| `class` | string | Class/grade (e.g. "Form 3A") |
+| `studentCode` | string | Optional unique identifier |
+| `isActive` | boolean | Controls visibility in registration search |
+| `createdAt` | Timestamp | When added |
+
+---
+
+## CSV Import Format (Students)
+
+The Students page supports bulk import. CSV must have these headers:
+
+```csv
+name,class,studentCode
+Alice Johnson,Form 3A,STU-001
+Bob Smith,Primary 5,STU-002
+```
+
+`studentCode` is optional.
+
+---
+
+## Offline Support
+
+The gate page is designed to work without a network connection:
+
+1. **IndexedDB Persistence** — Firestore automatically caches reads locally
+2. **Cache Warming** — On entering the scanner, today's visits and active students are pre-fetched into the local cache
+3. **Optimistic UI** — Check-in/out updates the UI immediately; the write syncs to Firestore in the background
+4. **Write Queuing** — If offline, writes are queued locally and replayed when reconnected
+5. **Status Banner** — The gate page shows a live online/offline indicator
+6. **Service Worker** — Static assets served from cache; the app loads even with no connection
+
+---
+
+## Authentication
+
+| Area | Method |
+|------|--------|
+| Admin (`/admin/*`) | Firebase Auth — email/password. Protected via `ProtectedRoute` component. |
+| Gate (`/gate`) | 4-digit PIN stored in `sessionStorage` (cleared on browser close). |
+| Registration (`/register`) | No auth required. |
+
+Staff accounts are created directly in the Firebase console (no public sign-up).
+
+---
+
+## Project Structure
+
+```
+src/
+├── App.js                   # Route definitions
+├── firebase.js              # Firebase init + Firestore persistence
+├── index.js                 # Entry point + service worker registration
+├── components/
+│   ├── ProtectedRoute.jsx   # Auth guard for admin routes
+│   └── Spinner.jsx          # Loading indicator
+├── hooks/
+│   └── useAuth.js           # Firebase auth state hook
+├── pages/
+│   ├── RegisterPage.jsx     # Visitor pre-registration
+│   ├── LoginPage.jsx        # Staff login
+│   ├── GatePage.jsx         # Gate scanning (check-in/out)
+│   └── admin/
+│       ├── AdminLayout.jsx  # Sidebar layout
+│       ├── DashboardPage.jsx
+│       ├── StudentsPage.jsx
+│       └── VisitsPage.jsx
+└── utils/
+    └── generateToken.js     # QR token generator (VIS-XXXXXX)
+public/
+├── sw.js                    # Service worker
+└── manifest.json            # PWA manifest (start_url: /gate)
+```
+
+---
+
+## License
+
+MIT
