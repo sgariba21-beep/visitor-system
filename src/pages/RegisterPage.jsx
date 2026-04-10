@@ -5,7 +5,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { generateVisitToken } from "../utils/generateToken";
-// QR code is now displayed on a separate page (/qr/:token), not here
+import { QRCodeCanvas } from "qrcode.react";
 
 // ─── Purpose options ──────────────────────────────────────────────────────────
 const PURPOSE_OPTIONS = [
@@ -43,6 +43,7 @@ export default function RegisterPage() {
   const [selectedStudents, setSelectedStudents] = useState([]); // array of student objects
   const [searching, setSearching]             = useState(false);
   const searchTimeout                         = useRef(null);   // for debouncing
+  const qrWrapperRef                          = useRef(null);   // for QR canvas image export
 
   // ── Student ID verification state ────────────────────────────────────────────
   const [pendingStudent, setPendingStudent] = useState(null);  // student awaiting ID verification
@@ -275,14 +276,13 @@ export default function RegisterPage() {
       ? successData.purposeOther
       : successData.purpose;
 
-    // Build the QR page URL
-    const qrUrl = `${window.location.origin}/qr/${successData.qrToken}`;
-
-    // Build share message
     const studentNames = successData.students
       .map(s => `${s.studentName} (${s.class})`)
       .join(", ");
-    const shareMessage =
+
+    // Fallback message (text link) — used when image sharing isn't available
+    const qrUrl = `${window.location.origin}/qr/${successData.qrToken}`;
+    const fallbackMessage =
       `Your visit to the school has been registered.\n\n` +
       `Visitor: ${successData.visitorName}\n` +
       `Date: ${formatDate(successData.visitDate)}\n` +
@@ -290,14 +290,53 @@ export default function RegisterPage() {
       `Open this link to view your QR code:\n${qrUrl}\n\n` +
       `Show the QR code to staff at the gate on your visiting day.`;
 
-    // Format phone for WhatsApp (strip leading 0, add country code)
-    const rawPhone = successData.visitorPhone.replace(/\D/g, "");
-    const waPhone = rawPhone.startsWith("0")
-      ? "233" + rawPhone.slice(1)   // Ghana country code
-      : rawPhone;
+    // Message used when sharing the QR image directly
+    const imageShareText =
+      `Your visit to the school has been registered.\n\n` +
+      `Visitor: ${successData.visitorName}\n` +
+      `Date: ${formatDate(successData.visitDate)}\n` +
+      `Student(s): ${studentNames}\n\n` +
+      `Show the attached QR code to staff at the gate on your visiting day. ` +
+      `This QR is only valid on ${formatDate(successData.visitDate)}.`;
 
-    const whatsappUrl = `https://wa.me/${waPhone}?text=${encodeURIComponent(shareMessage)}`;
-    const smsUrl = `sms:${successData.visitorPhone}?body=${encodeURIComponent(shareMessage)}`;
+    // Format phone for WhatsApp fallback (strip leading 0, add Ghana country code)
+    const rawPhone = successData.visitorPhone.replace(/\D/g, "");
+    const waPhone = rawPhone.startsWith("0") ? "233" + rawPhone.slice(1) : rawPhone;
+    const whatsappUrl = `https://wa.me/${waPhone}?text=${encodeURIComponent(fallbackMessage)}`;
+
+    function canvasToBlob(canvas) {
+      return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    }
+
+    async function downloadQR() {
+      const canvas = qrWrapperRef.current?.querySelector("canvas");
+      if (!canvas) return;
+      const url = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `visit-qr-${successData.qrToken}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    async function handleWhatsApp() {
+      const canvas = qrWrapperRef.current?.querySelector("canvas");
+      if (canvas) {
+        const blob = await canvasToBlob(canvas);
+        const file = new File([blob], `visit-qr-${successData.qrToken}.png`, { type: "image/png" });
+        if (navigator.canShare?.({ files: [file] })) {
+          try {
+            await navigator.share({ files: [file], text: imageShareText });
+            return;
+          } catch (err) {
+            if (err.name === "AbortError") return;
+            // fall through to text link fallback
+          }
+        }
+      }
+      window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    }
 
     return (
       <div style={styles.page}>
@@ -308,7 +347,7 @@ export default function RegisterPage() {
             <div style={styles.successIcon}>&#9989;</div>
             <h1 style={styles.successTitle}>Registration Complete</h1>
             <p style={styles.successSubtitle}>
-              Your QR code has been prepared. Send it to your phone using the options below.
+              Your QR code is ready. Save it or send it to your phone below.
             </p>
           </div>
 
@@ -321,35 +360,39 @@ export default function RegisterPage() {
             <SummaryRow label="Student(s)"  value={studentNames} />
           </div>
 
-          {/* Share buttons */}
+          {/* QR Code */}
+          <div ref={qrWrapperRef} style={styles.qrBox}>
+            <QRCodeCanvas
+              value={successData.qrToken}
+              size={200}
+              level="H"
+              includeMargin={true}
+            />
+            <p style={styles.qrToken}>{successData.qrToken}</p>
+          </div>
+
+          {/* Action buttons */}
           <div style={styles.shareSection}>
-            <p style={styles.shareTitle}>Send QR Code to Your Phone</p>
+            <p style={styles.shareTitle}>Save or Send Your QR Code</p>
 
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={styles.btnWhatsApp}
-            >
+            <button onClick={downloadQR} style={styles.btnDownload}>
+              <span style={{ fontSize: 20 }}>&#11015;</span>
+              Save QR Image
+            </button>
+
+            <button onClick={handleWhatsApp} style={styles.btnWhatsApp}>
               <span style={{ fontSize: 20 }}>&#128172;</span>
-              Send via WhatsApp
-            </a>
+              Share via WhatsApp
+            </button>
 
-            <a
-              href={smsUrl}
-              style={styles.btnSms}
-            >
-              <span style={{ fontSize: 20 }}>&#128233;</span>
-              Send via SMS
-            </a>
           </div>
 
           {/* Instructions */}
           <div style={styles.instructions}>
             <p style={styles.instructionTitle}>&#128204; Important</p>
             <ul style={styles.instructionList}>
-              <li>Tap a button above to receive your QR code link via WhatsApp or SMS.</li>
-              <li>Open the link on your phone to view the QR code at the gate.</li>
+              <li>Save the QR image or screenshot this screen — no internet needed to show it at the gate.</li>
+              <li>Use the buttons above to save or share the QR to your phone.</li>
               <li>This QR is only valid on <strong>{formatDate(successData.visitDate)}</strong>.</li>
               <li>If you lose it, staff can look you up manually at the gate.</li>
             </ul>
@@ -790,6 +833,19 @@ const styles = {
     padding: "16px 20px", marginBottom: 20,
   },
 
+  // QR display on success screen
+  qrBox: {
+    display: "flex", flexDirection: "column",
+    alignItems: "center", marginBottom: 24,
+    padding: 20, background: "#f8fafc",
+    borderRadius: 16, border: "1px dashed #cbd5e1",
+  },
+  qrToken: {
+    marginTop: 12, fontSize: 18, fontWeight: 700,
+    letterSpacing: "0.12em", color: "#0f172a",
+    fontFamily: "monospace",
+  },
+
   // Share buttons
   shareSection: {
     marginBottom: 20,
@@ -797,6 +853,15 @@ const styles = {
   shareTitle: {
     fontSize: 14, fontWeight: 700, color: "#374151",
     marginBottom: 12, textAlign: "center",
+  },
+  btnDownload: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    gap: 10, width: "100%", padding: "14px",
+    fontSize: 16, fontWeight: 700,
+    background: "#0f172a", color: "#fff",
+    border: "none", borderRadius: 12, cursor: "pointer",
+    marginBottom: 10,
+    boxShadow: "0 4px 14px rgba(15,23,42,0.25)",
   },
   btnWhatsApp: {
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -806,15 +871,6 @@ const styles = {
     border: "none", borderRadius: 12, cursor: "pointer",
     textDecoration: "none", marginBottom: 10,
     boxShadow: "0 4px 14px rgba(37,211,102,0.35)",
-  },
-  btnSms: {
-    display: "flex", alignItems: "center", justifyContent: "center",
-    gap: 10, width: "100%", padding: "14px",
-    fontSize: 16, fontWeight: 700,
-    background: "#2563eb", color: "#fff",
-    border: "none", borderRadius: 12, cursor: "pointer",
-    textDecoration: "none",
-    boxShadow: "0 4px 14px rgba(37,99,235,0.35)",
   },
 
   instructions: {
