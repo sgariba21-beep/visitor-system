@@ -5,7 +5,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { generateVisitToken } from "../utils/generateToken";
-import { QRCodeSVG } from "qrcode.react";
+// QR code is now displayed on a separate page (/qr/:token), not here
 
 // ─── Purpose options ──────────────────────────────────────────────────────────
 const PURPOSE_OPTIONS = [
@@ -275,28 +275,41 @@ export default function RegisterPage() {
       ? successData.purposeOther
       : successData.purpose;
 
+    // Build the QR page URL
+    const qrUrl = `${window.location.origin}/qr/${successData.qrToken}`;
+
+    // Build share message
+    const studentNames = successData.students
+      .map(s => `${s.studentName} (${s.class})`)
+      .join(", ");
+    const shareMessage =
+      `Your visit to the school has been registered.\n\n` +
+      `Visitor: ${successData.visitorName}\n` +
+      `Date: ${formatDate(successData.visitDate)}\n` +
+      `Student(s): ${studentNames}\n\n` +
+      `Open this link to view your QR code:\n${qrUrl}\n\n` +
+      `Show the QR code to staff at the gate on your visiting day.`;
+
+    // Format phone for WhatsApp (strip leading 0, add country code)
+    const rawPhone = successData.visitorPhone.replace(/\D/g, "");
+    const waPhone = rawPhone.startsWith("0")
+      ? "233" + rawPhone.slice(1)   // Ghana country code
+      : rawPhone;
+
+    const whatsappUrl = `https://wa.me/${waPhone}?text=${encodeURIComponent(shareMessage)}`;
+    const smsUrl = `sms:${successData.visitorPhone}?body=${encodeURIComponent(shareMessage)}`;
+
     return (
       <div style={styles.page}>
         <div style={styles.card}>
 
           {/* Header */}
           <div style={styles.successHeader}>
-            <div style={styles.successIcon}>✅</div>
+            <div style={styles.successIcon}>&#9989;</div>
             <h1 style={styles.successTitle}>Registration Complete</h1>
             <p style={styles.successSubtitle}>
-              Show this QR code to staff at the gate on your visiting day
+              Your QR code has been prepared. Send it to your phone using the options below.
             </p>
-          </div>
-
-          {/* QR Code */}
-          <div style={styles.qrWrapper}>
-            <QRCodeSVG
-              value={successData.qrToken}
-              size={200}
-              level="H"               // High error correction — still scans even if slightly damaged
-              includeMargin={true}
-            />
-            <p style={styles.qrToken}>{successData.qrToken}</p>
           </div>
 
           {/* Visit summary */}
@@ -305,17 +318,38 @@ export default function RegisterPage() {
             <SummaryRow label="Phone"       value={successData.visitorPhone} />
             <SummaryRow label="Visit Date"  value={formatDate(successData.visitDate)} />
             <SummaryRow label="Purpose"     value={displayPurpose} />
-            <SummaryRow
-              label="Student(s)"
-              value={successData.students.map(s => `${s.studentName} (${s.class})`).join(", ")}
-            />
+            <SummaryRow label="Student(s)"  value={studentNames} />
+          </div>
+
+          {/* Share buttons */}
+          <div style={styles.shareSection}>
+            <p style={styles.shareTitle}>Send QR Code to Your Phone</p>
+
+            <a
+              href={whatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.btnWhatsApp}
+            >
+              <span style={{ fontSize: 20 }}>&#128172;</span>
+              Send via WhatsApp
+            </a>
+
+            <a
+              href={smsUrl}
+              style={styles.btnSms}
+            >
+              <span style={{ fontSize: 20 }}>&#128233;</span>
+              Send via SMS
+            </a>
           </div>
 
           {/* Instructions */}
           <div style={styles.instructions}>
-            <p style={styles.instructionTitle}>📌 Important</p>
+            <p style={styles.instructionTitle}>&#128204; Important</p>
             <ul style={styles.instructionList}>
-              <li>Screenshot or save this QR code before closing this page.</li>
+              <li>Tap a button above to receive your QR code link via WhatsApp or SMS.</li>
+              <li>Open the link on your phone to view the QR code at the gate.</li>
               <li>This QR is only valid on <strong>{formatDate(successData.visitDate)}</strong>.</li>
               <li>If you lose it, staff can look you up manually at the gate.</li>
             </ul>
@@ -751,21 +785,36 @@ const styles = {
   successTitle:    { fontSize: 22, fontWeight: 700, color: "#0f172a", marginBottom: 4 },
   successSubtitle: { fontSize: 14, color: "#6b7280" },
 
-  qrWrapper: {
-    display: "flex", flexDirection: "column",
-    alignItems: "center", marginBottom: 24,
-    padding: 20, background: "#f8fafc",
-    borderRadius: 16, border: "1px dashed #cbd5e1",
-  },
-  qrToken: {
-    marginTop: 12, fontSize: 18, fontWeight: 700,
-    letterSpacing: "0.12em", color: "#0f172a",
-    fontFamily: "monospace",
-  },
-
   summary: {
     background: "#f8fafc", borderRadius: 12,
     padding: "16px 20px", marginBottom: 20,
+  },
+
+  // Share buttons
+  shareSection: {
+    marginBottom: 20,
+  },
+  shareTitle: {
+    fontSize: 14, fontWeight: 700, color: "#374151",
+    marginBottom: 12, textAlign: "center",
+  },
+  btnWhatsApp: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    gap: 10, width: "100%", padding: "14px",
+    fontSize: 16, fontWeight: 700,
+    background: "#25D366", color: "#fff",
+    border: "none", borderRadius: 12, cursor: "pointer",
+    textDecoration: "none", marginBottom: 10,
+    boxShadow: "0 4px 14px rgba(37,211,102,0.35)",
+  },
+  btnSms: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    gap: 10, width: "100%", padding: "14px",
+    fontSize: 16, fontWeight: 700,
+    background: "#2563eb", color: "#fff",
+    border: "none", borderRadius: 12, cursor: "pointer",
+    textDecoration: "none",
+    boxShadow: "0 4px 14px rgba(37,99,235,0.35)",
   },
 
   instructions: {

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import RegisterPage   from "./pages/RegisterPage";
+import QrPage         from "./pages/QrPage";
 import GatePage       from "./pages/GatePage";
 import LoginPage      from "./pages/LoginPage";
 import AdminLayout    from "./pages/admin/AdminLayout";
@@ -15,8 +16,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         {/* Public routes */}
-        <Route path="/"      element={<RegisterPage />} />
-        <Route path="/login" element={<LoginPage />} />
+        <Route path="/"          element={<RegisterPage />} />
+        <Route path="/qr/:token" element={<QrPage />} />
+        <Route path="/login"     element={<LoginPage />} />
 
         {/* Protected admin routes */}
         <Route path="/admin" element={
