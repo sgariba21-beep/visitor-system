@@ -80,6 +80,17 @@ export default function StudentsPage() {
     e.preventDefault();
     if (!form.name.trim() || !form.class.trim()) return;
 
+    const newId = form.studentId.trim().toLowerCase();
+    if (newId) {
+      const duplicate = students.find(
+        s => (s.studentId || s.studentCode || "").toLowerCase() === newId
+      );
+      if (duplicate) {
+        showFeedback("error", `Student ID "${form.studentId.trim()}" is already assigned to ${duplicate.name}.`);
+        return;
+      }
+    }
+
     try {
       const docRef = await addDoc(collection(db, "students"), {
         name:        form.name.trim(),
@@ -102,6 +113,18 @@ export default function StudentsPage() {
   // ── Edit a student ─────────────────────────────────────────────────────────
   async function handleEdit(e) {
     e.preventDefault();
+
+    const newId = form.studentId.trim().toLowerCase();
+    if (newId) {
+      const duplicate = students.find(
+        s => s.id !== editTarget.id &&
+             (s.studentId || s.studentCode || "").toLowerCase() === newId
+      );
+      if (duplicate) {
+        showFeedback("error", `Student ID "${form.studentId.trim()}" is already assigned to ${duplicate.name}.`);
+        return;
+      }
+    }
 
     try {
       const ref = doc(db, "students", editTarget.id);
@@ -204,20 +227,34 @@ export default function StudentsPage() {
   async function confirmCsvImport() {
     setImporting(true);
     let added = 0;
+    let skipped = 0;
+    // Track IDs seen so far (existing + already imported this batch)
+    const seenIds = new Set(
+      students.map(s => (s.studentId || s.studentCode || "").toLowerCase()).filter(Boolean)
+    );
     try {
       for (const row of csvRows) {
         if (!row.name?.trim() || !row.class?.trim()) continue; // skip blank rows
+        const rowId = (row.studentId || row.studentCode)?.trim() || "";
+        if (rowId && seenIds.has(rowId.toLowerCase())) {
+          skipped++;
+          continue;
+        }
         await addDoc(collection(db, "students"), {
           name:        row.name.trim(),
           class:       row.class.trim(),
-          studentId:   (row.studentId || row.studentCode)?.trim() || "",
+          studentId:   rowId,
           isActive:    true,
           createdAt:   serverTimestamp(),
         });
+        if (rowId) seenIds.add(rowId.toLowerCase());
         added++;
       }
       await loadStudents(); // Reload full list
-      showFeedback("success", `Imported ${added} students successfully.`);
+      const msg = skipped > 0
+        ? `Imported ${added} students. Skipped ${skipped} duplicate student ID(s).`
+        : `Imported ${added} students successfully.`;
+      showFeedback(skipped > 0 ? "error" : "success", msg);
       setMode("list");
       setCsvRows([]);
     } catch {
