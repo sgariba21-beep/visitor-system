@@ -72,23 +72,23 @@ export async function lookupVisitByToken(token) {
 }
 
 // ── Gate PIN caching ─────────────────────────────────────────────────────
-// The PIN lives in gate_settings (admin-editable) instead of a build-time
-// env var, but the Gate page's PIN screen must still work offline — so we
-// cache the last-known value locally, same read-fallback pattern as visits
-// and students.
+// The server never hands back the real PIN value (verify_gate_pin only
+// returns true/false, and gate_settings.pin is no longer anon-readable).
+// So instead of fetching "the correct PIN", we cache the PIN the user
+// typed *after* the server has confirmed it's correct — that's how the
+// PIN screen keeps working offline, without the value ever being readable
+// by anyone who hasn't already typed the right one at least once online.
 export async function getCachedPin() {
   const row = await offlineDb.settings.get("gate_pin");
   return row?.value ?? null;
 }
 
-export async function refreshGatePin() {
-  const remote = await withOfflineTimeout(
-    supabase.from("gate_settings").select("pin").eq("id", true).single(),
-    2000
-  );
-  if (!remote.ok || !remote.data) return null;
-  await offlineDb.settings.put({ key: "gate_pin", value: remote.data.pin });
-  return remote.data.pin;
+export async function cacheConfirmedPin(pin) {
+  await offlineDb.settings.put({ key: "gate_pin", value: pin });
+}
+
+export async function clearCachedPin() {
+  await offlineDb.settings.delete("gate_pin");
 }
 
 // ── Outbox: durable queue for writes that failed/timed out live ────────
@@ -106,16 +106,24 @@ export async function enqueue(type, payload) {
   return local_id;
 }
 
+// isPinRejectedError: errcode P0005 means the gate PIN was rotated since
+// this device last logged in (or the cached PIN is simply wrong) — the
+// caller should clear the local session and force a fresh PIN entry
+// rather than treating it as a generic offline/failure case.
+export function isPinRejectedError(error) {
+  return error?.code === "P0005";
+}
+
 async function sendMutation(item) {
   const { type, payload } = item;
   if (type === "check_in") {
-    return supabase.rpc("check_in_visit", { p_qr_token: payload.qrToken });
+    return supabase.rpc("check_in_visit", { p_qr_token: payload.qrToken, p_pin: payload.pin });
   }
   if (type === "check_out") {
-    return supabase.rpc("check_out_visit", { p_qr_token: payload.qrToken });
+    return supabase.rpc("check_out_visit", { p_qr_token: payload.qrToken, p_pin: payload.pin });
   }
   if (type === "walk_in") {
-    return supabase.rpc("create_visit", payload.rpcArgs);
+    return supabase.rpc("create_visit", payload.rpcArgs); // rpcArgs already includes p_pin
   }
   throw new Error(`Unknown outbox mutation type: ${type}`);
 }

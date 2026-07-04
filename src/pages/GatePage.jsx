@@ -4,7 +4,7 @@ import { generateVisitToken } from "../utils/generateToken";
 import {
   withOfflineTimeout, warmCache, getCachedStudents, getCachedVisits,
   updateCachedVisit, lookupVisitByToken, enqueue, flushOutbox,
-  getCachedPin, refreshGatePin,
+  getCachedPin, cacheConfirmedPin, clearCachedPin, isPinRejectedError,
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 import SchoolLogo from "../components/SchoolLogo";
@@ -21,10 +21,7 @@ export default function GatePage() {
   // ── PIN state ───────────────────────────────────────────────────────────────
   const [pinInput, setPinInput]   = useState("");
   const [pinError, setPinError]   = useState("");
-  // The PIN is admin-editable (gate_settings table), not a build-time
-  // constant. "1234" is just a sane bootstrap default before the cached or
-  // freshly-fetched value comes back — matches the table's own default.
-  const [correctPin, setCorrectPin] = useState("1234");
+  const [pinSubmitting, setPinSubmitting] = useState(false);
 
   // ── Scanner state ───────────────────────────────────────────────────────────
   const [scannerError, setScannerError] = useState("");
@@ -70,39 +67,66 @@ export default function GatePage() {
   // PIN LOGIC
   // ────────────────────────────────────────────────────────────────────────────
 
-  function handlePinSubmit(e) {
+  // The server never returns the real PIN (verify_gate_pin is a true/false
+  // check), so there's nothing to preload here. A live check happens first;
+  // offline (or on a timeout), we fall back to this device's own last
+  // confirmed-correct PIN, cached locally in cacheConfirmedPin() below.
+  async function handlePinSubmit(e) {
     e.preventDefault();
-    if (pinInput === correctPin) {
-      // Store in sessionStorage so refreshing the page doesn't log them out
-      sessionStorage.setItem("gate_auth", "true");
-      setScreen("scanner");
-      setPinError("");
-    } else {
-      setPinError("Incorrect PIN. Please try again.");
-      setPinInput("");
+    setPinError("");
+    setPinSubmitting(true);
+
+    try {
+      const result = await withOfflineTimeout(supabase.rpc("verify_gate_pin", { p_pin: pinInput }));
+
+      if (result.ok) {
+        if (result.data === true) {
+          await cacheConfirmedPin(pinInput);
+          sessionStorage.setItem("gate_pin", pinInput);
+          setScreen("scanner");
+        } else {
+          setPinError("Incorrect PIN. Please try again.");
+          setPinInput("");
+        }
+        return;
+      }
+
+      // Offline / request timed out — fall back to the last PIN this
+      // device itself confirmed correct while online.
+      const cached = await getCachedPin();
+      if (cached && pinInput === cached) {
+        sessionStorage.setItem("gate_pin", pinInput);
+        setScreen("scanner");
+      } else if (cached) {
+        setPinError("Incorrect PIN. Please try again.");
+        setPinInput("");
+      } else {
+        setPinError("You're offline and this device hasn't logged in before. Connect to WiFi once to unlock the gate.");
+        setPinInput("");
+      }
+    } finally {
+      setPinSubmitting(false);
     }
   }
 
   // Check sessionStorage on mount — if already authenticated, skip PIN
   useEffect(() => {
-    if (sessionStorage.getItem("gate_auth") === "true") {
+    if (sessionStorage.getItem("gate_pin")) {
       setScreen("scanner");
     }
   }, []);
 
-  // Load the current gate PIN: an immediate read from the local cache (so
-  // it's available instantly, even offline), backed by a fresh fetch (so a
-  // PIN an admin just changed takes effect as soon as the device is online).
-  useEffect(() => {
-    let cancelled = false;
-    getCachedPin().then((cached) => {
-      if (cached && !cancelled) setCorrectPin(cached);
-    });
-    refreshGatePin().then((fresh) => {
-      if (fresh && !cancelled) setCorrectPin(fresh);
-    });
-    return () => { cancelled = true; };
-  }, []);
+  // If a background outbox retry finds the cached PIN has been rotated
+  // (errcode P0005), the local session is no longer valid — clear it so
+  // the next gate action prompts for the new PIN instead of silently
+  // failing over and over.
+  function forcePinReentry(message) {
+    sessionStorage.removeItem("gate_pin");
+    clearCachedPin();
+    setActionFeedback(null);
+    setPinError(message);
+    setScreen("pin");
+  }
 
   // ── PWA install prompt ───────────────────────────────────────────────────
   // The browser fires this event when the app is installable.
@@ -321,6 +345,7 @@ export default function GatePage() {
   async function runTransition(nextStatus, outboxType, successMessage) {
     const nowIso = new Date().toISOString();
     const timestampField = nextStatus === "checked_in" ? "checked_in_at" : "checked_out_at";
+    const pin = sessionStorage.getItem("gate_pin");
 
     // Optimistic update first — UI responds immediately even offline
     setVisitDoc(prev => ({ ...prev, status: nextStatus, [timestampField]: nowIso }));
@@ -328,10 +353,15 @@ export default function GatePage() {
     await updateCachedVisit(visitDocId, { status: nextStatus, [timestampField]: nowIso });
 
     const rpcName = outboxType === "check_in" ? "check_in_visit" : "check_out_visit";
-    const result = await withOfflineTimeout(supabase.rpc(rpcName, { p_qr_token: visitDoc.qr_token }));
+    const result = await withOfflineTimeout(supabase.rpc(rpcName, { p_qr_token: visitDoc.qr_token, p_pin: pin }));
+
+    if (isPinRejectedError(result.error)) {
+      forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
+      return;
+    }
 
     if (!result.ok && result.error?.code !== "P0001") {
-      await enqueue(outboxType, { qrToken: visitDoc.qr_token });
+      await enqueue(outboxType, { qrToken: visitDoc.qr_token, pin });
       setActionFeedback({ type: "success", message: `${successMessage} (queued — will sync when online)` });
     }
   }
@@ -487,9 +517,16 @@ export default function GatePage() {
           student_name: s.name,
           class:        s.class,
         })),
+        p_pin: sessionStorage.getItem("gate_pin"),
       };
 
       const result = await withOfflineTimeout(supabase.rpc("create_visit", rpcArgs));
+
+      if (isPinRejectedError(result.error)) {
+        setWalkInSubmitting(false);
+        forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
+        return;
+      }
 
       let visitData;
       if (result.ok) {
@@ -604,7 +641,7 @@ export default function GatePage() {
           <button
             style={styles.lockBtn}
             onClick={() => {
-              sessionStorage.removeItem("gate_auth");
+              sessionStorage.removeItem("gate_pin");
               setScreen("pin");
             }}
           >
@@ -642,8 +679,8 @@ export default function GatePage() {
                 autoFocus
               />
               {pinError && <p style={styles.pinError}>{pinError}</p>}
-              <button type="submit" style={styles.btnPrimary}>
-                Unlock Gate
+              <button type="submit" style={styles.btnPrimary} disabled={pinSubmitting}>
+                {pinSubmitting ? "Checking..." : "Unlock Gate"}
               </button>
             </form>
           </div>
