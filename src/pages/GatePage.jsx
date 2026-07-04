@@ -1,26 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  collection, query, where, addDoc, orderBy,
-  getDocs, updateDoc, doc, serverTimestamp, Timestamp
-} from "firebase/firestore";
+import { supabase } from "../lib/supabaseClient";
 import { generateVisitToken } from "../utils/generateToken";
-import { db } from "../firebase";
+import {
+  withOfflineTimeout, warmCache, getCachedStudents, getCachedVisits,
+  updateCachedVisit, lookupVisitByToken, enqueue, flushOutbox,
+} from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CORRECT_PIN    = process.env.REACT_APP_GATE_PIN || "1234";
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
-
-// Races a Firestore write against a timeout.
-// Offline, Firestore Promises hang indefinitely (the write IS queued
-// locally, but server confirmation never arrives). This lets the UI
-// move on after 2.5 s, trusting Firestore's offline persistence to sync later.
-function withOfflineTimeout(promise, ms = 2500) {
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(resolve, ms)),
-  ]);
-}
 
 export default function GatePage() {
 
@@ -37,8 +26,8 @@ export default function GatePage() {
   const scannerRef = useRef(null); // holds the Html5Qrcode instance
 
   // ── Result state ────────────────────────────────────────────────────────────
-  const [visitDoc, setVisitDoc]     = useState(null);  // full visit data from Firestore
-  const [visitDocId, setVisitDocId] = useState(null);  // Firestore document ID
+  const [visitDoc, setVisitDoc]     = useState(null);  // full visit row (+ visit_students)
+  const [visitDocId, setVisitDocId] = useState(null);  // visit's id (uuid)
   const [actionLoading, setActionLoading] = useState(false);
   const [actionFeedback, setActionFeedback] = useState(null); // {type, message}
 
@@ -67,9 +56,9 @@ export default function GatePage() {
 
   // Cache State
   const [cacheStatus, setCacheStatus] = useState("idle"); // "idle"|"warming"|"ready"|"failed"
-  
+
   // ── Today's date string ─────────────────────────────────────────────────────
-  // Used to validate QR codes — must match visit's visitDate
+  // Used to validate QR codes — must match visit's visit_date
   const todayStr = new Date().toISOString().split("T")[0]; // "2025-04-05"
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -115,9 +104,9 @@ export default function GatePage() {
     if (outcome === "accepted") setInstallPrompt(null);
   }
 
-  // ── Online/offline detection ─────────────────────────────────────────────
+  // ── Online/offline detection + outbox flush triggers ────────────────────
   useEffect(() => {
-    const goOnline  = () => setIsOnline(true);
+    const goOnline  = () => { setIsOnline(true); flushOutbox(); };
     const goOffline = () => setIsOnline(false);
     window.addEventListener("online",  goOnline);
     window.addEventListener("offline", goOffline);
@@ -127,41 +116,30 @@ export default function GatePage() {
     };
   }, []);
 
+  // Periodically retry the outbox while the gate screen is active — covers
+  // connections that report "online" but are actually too flaky for the
+  // live request to land.
+  useEffect(() => {
+    if (screen === "pin") return;
+    flushOutbox();
+    const interval = setInterval(() => flushOutbox(), 15000);
+    return () => clearInterval(interval);
+  }, [screen]);
+
   // ── Cache warming ────────────────────────────────────────────────────────
-  // Waits a moment for Firestore's persistence layer to initialise,
-  // then fetches today's visits AND active students into IndexedDB.
+  // Replaces Firestore's automatic offline cache: explicitly fetches today's
+  // visits and active students into the local Dexie mirror.
   useEffect(() => {
     if (screen === "pin") return;
 
     setCacheStatus("warming");
 
     const timer = setTimeout(async () => {
-      let visitsOk = false;
-      let studentsOk = false;
-
-      try {
-        await getDocs(query(
-          collection(db, "visits"),
-          where("visitDate", "==", todayStr)
-        ));
-        visitsOk = true;
-        console.log("Cache warmed: today's visits loaded.");
-      } catch (err) {
-        console.log("Visits cache warm skipped (likely offline):", err.code);
-      }
-
-      try {
-        await getDocs(query(
-          collection(db, "students"),
-          where("isActive", "==", true),
-          orderBy("name")
-        ));
-        studentsOk = true;
-        console.log("Cache warmed: students loaded.");
-      } catch (err) {
-        console.log("Students cache warm skipped (likely offline):", err.code);
-      }
-
+      const { visitsOk, studentsOk } = await warmCache(todayStr);
+      if (visitsOk) console.log("Cache warmed: today's visits loaded.");
+      else console.log("Visits cache warm skipped (likely offline).");
+      if (studentsOk) console.log("Cache warmed: students loaded.");
+      else console.log("Students cache warm skipped (likely offline).");
       setCacheStatus(visitsOk && studentsOk ? "ready" : "failed");
     }, 1500);
 
@@ -236,7 +214,7 @@ export default function GatePage() {
     await stopScanner();
     setScannerError("");
 
-    // Look up the visit in Firestore
+    // Look up the visit (Supabase, falling back to the Dexie cache offline)
     await lookupVisit(decodedText);
   }
 
@@ -249,26 +227,19 @@ export default function GatePage() {
 
   async function lookupVisit(token) {
     try {
-      const q = query(
-        collection(db, "visits"),
-        where("qrToken", "==", token.trim().toUpperCase())
-      );
-      const snap = await getDocs(q);
+      const data = await lookupVisitByToken(token.trim().toUpperCase());
 
-      if (snap.empty) {
-        // Token not found in database
+      if (!data) {
+        // Token not found, live or cached
         showScanError("QR code not recognised. Ask the visitor to show their registration confirmation.");
         return;
       }
 
-      const docSnap = snap.docs[0];
-      const data    = docSnap.data();
-
       // ── DATE VALIDATION ────────────────────────────────────────────────────
       // This is the core security check.
       // A QR registered for April 12th must NOT work on April 5th.
-      if (data.visitDate !== todayStr) {
-        const formatted = formatDate(data.visitDate);
+      if (data.visit_date !== todayStr) {
+        const formatted = formatDate(data.visit_date);
         showScanError(
           `This QR code is for ${formatted}, not today. ` +
           `Use manual lookup if the visitor needs assistance.`
@@ -278,7 +249,7 @@ export default function GatePage() {
 
       // All checks passed — show the visit details
       setVisitDoc(data);
-      setVisitDocId(docSnap.id);
+      setVisitDocId(data.id);
       setActionFeedback(null);
       setScreen("result");
 
@@ -308,37 +279,40 @@ export default function GatePage() {
     setActionFeedback(null);
 
     try {
-      const ref = doc(db, "visits", visitDocId);
-
       if (visitDoc.status === "registered") {
-        // ── CHECK IN ──────────────────────────────────────────────────────────
-        // Optimistic update first — UI responds immediately even offline
-        setVisitDoc(prev => ({ ...prev, status: "checked_in" }));
-        setActionFeedback({ type: "success", message: "✅ Checked in successfully. Welcome!" });
-        await withOfflineTimeout(updateDoc(ref, {
-          status:      "checked_in",
-          checkedInAt: Timestamp.now(),   // client-side timestamp — not overwritten on sync
-        }));
-
+        await runTransition("checked_in", "check_in", "✅ Checked in successfully. Welcome!");
       } else if (visitDoc.status === "checked_in") {
-        // ── CHECK OUT ─────────────────────────────────────────────────────────
-        setVisitDoc(prev => ({ ...prev, status: "checked_out" }));
-        setActionFeedback({ type: "success", message: "👋 Checked out successfully. Safe travels!" });
-        await withOfflineTimeout(updateDoc(ref, {
-          status:       "checked_out",
-          checkedOutAt: Timestamp.now(),  // client-side timestamp — not overwritten on sync
-        }));
-
+        await runTransition("checked_out", "check_out", "👋 Checked out successfully. Safe travels!");
       } else {
         // ── ALREADY CHECKED OUT ───────────────────────────────────────────────
         setActionFeedback({ type: "info", message: "This visit is already complete." });
       }
-
     } catch (err) {
       console.error("Action failed:", err);
       setActionFeedback({ type: "error", message: "Action failed. Check your connection." });
     } finally {
       setActionLoading(false);
+    }
+  }
+
+  // Shared by check-in and check-out: optimistic update, race a short
+  // timeout against the live RPC, and durably enqueue on failure so the
+  // write survives a dropped connection instead of silently vanishing.
+  async function runTransition(nextStatus, outboxType, successMessage) {
+    const nowIso = new Date().toISOString();
+    const timestampField = nextStatus === "checked_in" ? "checked_in_at" : "checked_out_at";
+
+    // Optimistic update first — UI responds immediately even offline
+    setVisitDoc(prev => ({ ...prev, status: nextStatus, [timestampField]: nowIso }));
+    setActionFeedback({ type: "success", message: successMessage });
+    await updateCachedVisit(visitDocId, { status: nextStatus, [timestampField]: nowIso });
+
+    const rpcName = outboxType === "check_in" ? "check_in_visit" : "check_out_visit";
+    const result = await withOfflineTimeout(supabase.rpc(rpcName, { p_qr_token: visitDoc.qr_token }));
+
+    if (!result.ok && result.error?.code !== "P0001") {
+      await enqueue(outboxType, { qrToken: visitDoc.qr_token });
+      setActionFeedback({ type: "success", message: `${successMessage} (queued — will sync when online)` });
     }
   }
 
@@ -364,22 +338,21 @@ export default function GatePage() {
     setManualResults([]);
 
     try {
-      // Fetch all of today's visits, then filter client-side.
-      // Firestore doesn't support OR queries across different fields,
-      // so we fetch by date and filter by name/phone locally.
-      const q = query(
-        collection(db, "visits"),
-        where("visitDate", "==", todayStr)
+      // Postgres/PostgREST doesn't make an OR-across-fields query any nicer
+      // than Firestore did, so we still fetch today's visits and filter
+      // client-side, falling back to the Dexie cache when offline.
+      const remote = await withOfflineTimeout(
+        supabase.from("visits").select("*, visit_students(*)").eq("visit_date", todayStr),
+        2000
       );
-      const snap = await getDocs(q);
-      const all  = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const all = remote.ok ? remote.data : await getCachedVisits();
 
       const lower = manualQuery.trim().toLowerCase();
       const results = all.filter(v =>
-        v.visitorName?.toLowerCase().includes(lower)  ||
-        v.visitorPhone?.includes(manualQuery.trim())  ||
-        v.students?.some(s =>
-          s.studentName?.toLowerCase().includes(lower)
+        v.visitor_name?.toLowerCase().includes(lower)  ||
+        v.visitor_phone?.includes(manualQuery.trim())  ||
+        v.visit_students?.some(s =>
+          s.student_name?.toLowerCase().includes(lower)
         )
       );
 
@@ -440,13 +413,11 @@ export default function GatePage() {
   async function searchWalkInStudents(queryText) {
     setWalkInSearching(true);
     try {
-      const q = query(
-        collection(db, "students"),
-        where("isActive", "==", true),
-        orderBy("name")
+      const remote = await withOfflineTimeout(
+        supabase.from("students").select("*").eq("is_active", true).order("name"),
+        2000
       );
-      const snap = await getDocs(q);
-      const all  = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const all = remote.ok ? remote.data : await getCachedStudents();
       const lower = queryText.toLowerCase();
       const selectedIds = walkInSelectedStudents.map(s => s.id);
       setWalkInStudentResults(
@@ -481,38 +452,62 @@ export default function GatePage() {
     setManualError("");
 
     try {
-      const qrToken = generateVisitToken();
-      const now     = Timestamp.now();
-
-      const visitData = {
-        visitorName:  walkIn.visitorName.trim(),
-        visitorPhone: walkIn.visitorPhone.trim(),
-        relationship: walkIn.relationship || "Not specified",
-        purpose:      walkIn.purpose,
-        purposeOther: walkIn.purpose === "Other" ? walkIn.purposeOther.trim() : "",
-        students: walkInSelectedStudents.map(s => ({
-          studentId:   s.id,
-          studentName: s.name,
-          class:       s.class,
+      const rpcArgs = {
+        p_visitor_name:  walkIn.visitorName.trim(),
+        p_visitor_phone: walkIn.visitorPhone.trim(),
+        p_relationship:  walkIn.relationship || "Not specified",
+        p_purpose:       walkIn.purpose,
+        p_purpose_other: walkIn.purpose === "Other" ? walkIn.purposeOther.trim() : "",
+        p_visit_date:    todayStr,
+        p_status:        "checked_in", // walk-ins are checked in immediately
+        p_created_by:    "gate_staff",
+        p_students: walkInSelectedStudents.map(s => ({
+          student_id:   s.id,
+          student_name: s.name,
+          class:        s.class,
         })),
-        visitDate:    todayStr,
-        // Walk-in visitors are checked in immediately on creation
-        status:       "checked_in",
-        qrToken:      qrToken,
-        registeredAt: now,
-        checkedInAt:  now,   // already arriving — mark check-in now
-        checkedOutAt: null,
-        createdBy:    "gate_staff",
       };
 
-      const docRef = await addDoc(collection(db, "visits"), visitData);
+      const result = await withOfflineTimeout(supabase.rpc("create_visit", rpcArgs));
+
+      let visitData;
+      if (result.ok) {
+        visitData = { ...result.data, visit_students: rpcArgs.p_students.map(s => ({
+          student_name: s.student_name, class: s.class,
+        })) };
+      } else {
+        // Offline (or the request failed/timed out): show a placeholder
+        // immediately and let the outbox create the real row once back online.
+        const now = new Date().toISOString();
+        visitData = {
+          id: `local-${Date.now()}`,
+          visitor_name:   rpcArgs.p_visitor_name,
+          visitor_phone:  rpcArgs.p_visitor_phone,
+          relationship:   rpcArgs.p_relationship,
+          purpose:        rpcArgs.p_purpose,
+          purpose_other:  rpcArgs.p_purpose_other,
+          visit_date:     rpcArgs.p_visit_date,
+          status:         "checked_in",
+          qr_token:       generateVisitToken(), // placeholder — server assigns the real one
+          registered_at:  now,
+          checked_in_at:  now,
+          checked_out_at: null,
+          created_by:     "gate_staff",
+          visit_students: rpcArgs.p_students.map(s => ({
+            student_name: s.student_name, class: s.class,
+          })),
+        };
+        await enqueue("walk_in", { rpcArgs });
+      }
 
       // Hand off directly to the result screen
       setVisitDoc(visitData);
-      setVisitDocId(docRef.id);
+      setVisitDocId(visitData.id);
       setActionFeedback({
         type: "success",
-        message: "✅ Walk-in registered and checked in.",
+        message: result.ok
+          ? "✅ Walk-in registered and checked in."
+          : "✅ Walk-in checked in (queued — will sync when online).",
       });
       resetManual();
       setScreen("result");
@@ -538,7 +533,7 @@ export default function GatePage() {
           Check-ins will sync automatically when connection returns.
         </div>
       )}
-      
+
       {/* ── Cache status banner ── */}
       {isOnline && cacheStatus === "warming" && (
         <div style={{ ...styles.offlineBanner, background: "#1e3a5f", color: "#93c5fd" }}>
@@ -675,8 +670,8 @@ export default function GatePage() {
             </div>
 
             {/* Visitor info */}
-            <h2 style={styles.visitorName}>{visitDoc.visitorName}</h2>
-            <p style={styles.visitorPhone}>📞 {visitDoc.visitorPhone}</p>
+            <h2 style={styles.visitorName}>{visitDoc.visitor_name}</h2>
+            <p style={styles.visitorPhone}>📞 {visitDoc.visitor_phone}</p>
             <p style={styles.visitorRelationship}>
               {visitDoc.relationship || "Visitor"}
             </p>
@@ -686,9 +681,9 @@ export default function GatePage() {
             {/* Students being visited */}
             <p style={styles.sectionLabel}>VISITING</p>
             <div style={styles.studentList}>
-              {visitDoc.students?.map((s, i) => (
+              {visitDoc.visit_students?.map((s, i) => (
                 <div key={i} style={styles.studentChip}>
-                  🎓 {s.studentName}
+                  🎓 {s.student_name}
                   <span style={styles.studentClass}>{s.class}</span>
                 </div>
               ))}
@@ -698,7 +693,7 @@ export default function GatePage() {
             <p style={styles.sectionLabel} >PURPOSE</p>
             <p style={styles.purposeText}>
               {visitDoc.purpose === "Other"
-                ? visitDoc.purposeOther
+                ? visitDoc.purpose_other
                 : visitDoc.purpose}
             </p>
 
@@ -708,13 +703,13 @@ export default function GatePage() {
             <div style={styles.timestamps}>
               <TimestampRow
                 label="Registered"
-                value={visitDoc.registeredAt}
+                value={visitDoc.registered_at}
               />
-              {visitDoc.checkedInAt && (
-                <TimestampRow label="Checked In"  value={visitDoc.checkedInAt} />
+              {visitDoc.checked_in_at && (
+                <TimestampRow label="Checked In"  value={visitDoc.checked_in_at} />
               )}
-              {visitDoc.checkedOutAt && (
-                <TimestampRow label="Checked Out" value={visitDoc.checkedOutAt} />
+              {visitDoc.checked_out_at && (
+                <TimestampRow label="Checked Out" value={visitDoc.checked_out_at} />
               )}
             </div>
 
@@ -858,13 +853,13 @@ export default function GatePage() {
                                       alignItems: "flex-start" }}>
                           <div>
                             <p style={styles.manualResultName}>
-                              {visit.visitorName}
+                              {visit.visitor_name}
                             </p>
                             <p style={styles.manualResultSub}>
-                              📞 {visit.visitorPhone}
+                              📞 {visit.visitor_phone}
                             </p>
                             <p style={styles.manualResultSub}>
-                              🎓 {visit.students?.map(s => s.studentName).join(", ")}
+                              🎓 {visit.visit_students?.map(s => s.student_name).join(", ")}
                             </p>
                           </div>
                           <StatusBadge status={visit.status} />
@@ -1097,12 +1092,10 @@ function StatusBadge({ status }) {
   );
 }
 
-// Renders a Firestore Timestamp or null gracefully
+// Renders an ISO timestamp string or null gracefully
 function TimestampRow({ label, value }) {
-  // Firestore Timestamps have a .toDate() method
-  // But right after a serverTimestamp() write, it might be null briefly
-  const formatted = value?.toDate
-    ? value.toDate().toLocaleTimeString("en-GB", {
+  const formatted = value
+    ? new Date(value).toLocaleTimeString("en-GB", {
         hour: "2-digit", minute: "2-digit", second: "2-digit"
       })
     : "—";

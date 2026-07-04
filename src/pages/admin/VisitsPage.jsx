@@ -1,9 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import {
-  collection, query, where,
-  getDocs, orderBy
-} from "firebase/firestore";
-import { db } from "../../firebase";
+import { supabase } from "../../lib/supabaseClient";
 import Spinner from "../../components/Spinner";
 
 const STATUS_OPTIONS = [
@@ -41,19 +37,17 @@ export default function VisitsPage() {
     setFetched(false);
 
     try {
-      // Query by date range.
-      // Firestore string comparison works correctly for "YYYY-MM-DD" format.
-      const q = query(
-        collection(db, "visits"),
-        where("visitDate", ">=", dateFrom),
-        where("visitDate", "<=", dateTo),
-        orderBy("visitDate", "desc"),
-        orderBy("registeredAt", "desc")
-      );
+      // Server-side date-range filtering on a real `date` column.
+      const { data, error } = await supabase
+        .from("visits")
+        .select("*, visit_students(*)")
+        .gte("visit_date", dateFrom)
+        .lte("visit_date", dateTo)
+        .order("visit_date", { ascending: false })
+        .order("registered_at", { ascending: false });
 
-      const snap  = await getDocs(q);
-      const docs  = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setVisits(docs);
+      if (error) throw error;
+      setVisits(data);
 
     } catch (err) {
       console.error("Failed to fetch visits:", err);
@@ -82,10 +76,10 @@ export default function VisitsPage() {
     // Text search — visitor name, phone, or student name
     if (searchQuery.trim()) {
       const lower = searchQuery.toLowerCase();
-      const matchesVisitor  = v.visitorName?.toLowerCase().includes(lower);
-      const matchesPhone    = v.visitorPhone?.includes(searchQuery);
-      const matchesStudent  = v.students?.some(s =>
-        s.studentName?.toLowerCase().includes(lower)
+      const matchesVisitor  = v.visitor_name?.toLowerCase().includes(lower);
+      const matchesPhone    = v.visitor_phone?.includes(searchQuery);
+      const matchesStudent  = v.visit_students?.some(s =>
+        s.student_name?.toLowerCase().includes(lower)
       );
       if (!matchesVisitor && !matchesPhone && !matchesStudent) return false;
     }
@@ -233,12 +227,12 @@ export default function VisitsPage() {
 // Shows a summary row; clicking expands to show full details
 function VisitCard({ visit, isExpanded, onToggle }) {
   const purpose = visit.purpose === "Other"
-    ? visit.purposeOther : visit.purpose;
+    ? visit.purpose_other : visit.purpose;
 
-  const studentNames = visit.students?.map(s => s.studentName).join(", ") || "—";
-  const registeredAt = visit.registeredAt?.toDate?.();
-  const checkedInAt  = visit.checkedInAt?.toDate?.();
-  const checkedOutAt = visit.checkedOutAt?.toDate?.();
+  const studentNames = visit.visit_students?.map(s => s.student_name).join(", ") || "—";
+  const registeredAt = visit.registered_at  ? new Date(visit.registered_at)  : null;
+  const checkedInAt  = visit.checked_in_at  ? new Date(visit.checked_in_at)  : null;
+  const checkedOutAt = visit.checked_out_at ? new Date(visit.checked_out_at) : null;
 
   function fmt(date) {
     if (!date) return "—";
@@ -266,16 +260,16 @@ function VisitCard({ visit, isExpanded, onToggle }) {
       <div style={cardStyles.summary} onClick={onToggle}>
         <div style={cardStyles.summaryLeft}>
           <div style={cardStyles.topRow}>
-            <span style={cardStyles.visitorName}>{visit.visitorName}</span>
+            <span style={cardStyles.visitorName}>{visit.visitor_name}</span>
             <StatusBadge status={visit.status} />
           </div>
           <p style={cardStyles.meta}>
-            📞 {visit.visitorPhone}
+            📞 {visit.visitor_phone}
             <span style={cardStyles.dot}>·</span>
             🎓 {studentNames}
             <span style={cardStyles.dot}>·</span>
             📋 {purpose}
-            {visit.createdBy === "gate_staff" && (
+            {visit.created_by === "gate_staff" && (
               <>
                 <span style={cardStyles.dot}>·</span>
                 <span style={cardStyles.walkInTag}>Walk-in</span>
@@ -285,7 +279,7 @@ function VisitCard({ visit, isExpanded, onToggle }) {
         </div>
         <div style={cardStyles.summaryRight}>
           <p style={cardStyles.dateLabel}>
-            {formatDateShort(visit.visitDate)}
+            {formatDateShort(visit.visit_date)}
           </p>
           <span style={cardStyles.chevron}>
             {isExpanded ? "▲" : "▼"}
@@ -299,26 +293,26 @@ function VisitCard({ visit, isExpanded, onToggle }) {
           <div style={cardStyles.detailsGrid}>
 
             <DetailBlock title="Visitor">
-              <DetailRow label="Name"         value={visit.visitorName} />
-              <DetailRow label="Phone"        value={visit.visitorPhone} />
+              <DetailRow label="Name"         value={visit.visitor_name} />
+              <DetailRow label="Phone"        value={visit.visitor_phone} />
               <DetailRow label="Relationship" value={visit.relationship || "—"} />
             </DetailBlock>
 
             <DetailBlock title="Students Visited">
-              {visit.students?.map((s, i) => (
+              {visit.visit_students?.map((s, i) => (
                 <DetailRow
                   key={i}
                   label={s.class}
-                  value={s.studentName}
+                  value={s.student_name}
                 />
               ))}
             </DetailBlock>
 
             <DetailBlock title="Visit Info">
-              <DetailRow label="Date"    value={formatDateShort(visit.visitDate)} />
+              <DetailRow label="Date"    value={formatDateShort(visit.visit_date)} />
               <DetailRow label="Purpose" value={purpose} />
               <DetailRow label="Source"
-                value={visit.createdBy === "gate_staff"
+                value={visit.created_by === "gate_staff"
                   ? "Walk-in (gate staff)" : "Pre-registered"} />
               {duration && (
                 <DetailRow label="Duration on campus" value={duration} />

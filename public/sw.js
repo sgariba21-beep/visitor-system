@@ -48,15 +48,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Let Firebase and Google API calls go straight to network —
-  // Firestore handles its own caching via IndexedDB persistence.
-  // We don't want to interfere with those requests.
-  if (
-    url.hostname.includes("firestore.googleapis.com") ||
-    url.hostname.includes("firebase.googleapis.com") ||
-    url.hostname.includes("identitytoolkit.googleapis.com") ||
-    url.hostname.includes("securetoken.googleapis.com")
-  ) {
+  // Let cross-origin API calls (Supabase REST/Auth/Realtime, etc.) go
+  // straight to network — offline durability for those now comes from the
+  // app's own Dexie outbox (see src/lib/offlineSync.js), not the service
+  // worker, so we shouldn't cache or intercept them here.
+  if (url.origin !== self.location.origin) {
     return; // don't intercept — fall through to normal network fetch
   }
 

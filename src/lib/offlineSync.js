@@ -1,0 +1,138 @@
+import { supabase } from "./supabaseClient";
+import { offlineDb } from "./offlineDb";
+
+// Races a promise against a timeout. Offline (or on a flaky connection),
+// Supabase requests can hang; this lets the UI move on after `ms`,
+// trusting the outbox to durably retry the write/read later.
+export async function withOfflineTimeout(promise, ms = 2500) {
+  let timedOut = false;
+  const timeout = new Promise((resolve) => {
+    setTimeout(() => {
+      timedOut = true;
+      resolve(undefined);
+    }, ms);
+  });
+
+  const settled = await Promise.race([
+    promise.then((r) => ({ ok: !r.error, data: r.data, error: r.error })),
+    timeout,
+  ]);
+
+  if (timedOut || !settled) return { ok: false, timedOut: true };
+  return settled;
+}
+
+// ── Cache warming ────────────────────────────────────────────────────────
+// Replaces Firestore's automatic offline cache warm: fetches today's visits
+// (with their joined visit_students) and active students, and mirrors them
+// into Dexie so Gate-page reads can fall back to them when offline.
+export async function warmCache(todayStr) {
+  const [visitsRes, studentsRes] = await Promise.all([
+    supabase.from("visits").select("*, visit_students(*)").eq("visit_date", todayStr),
+    supabase.from("students").select("*").eq("is_active", true).order("name"),
+  ]);
+
+  if (!visitsRes.error && visitsRes.data) {
+    await offlineDb.visits.clear();
+    await offlineDb.visits.bulkPut(visitsRes.data);
+  }
+  if (!studentsRes.error && studentsRes.data) {
+    await offlineDb.students.clear();
+    await offlineDb.students.bulkPut(studentsRes.data);
+  }
+
+  return { visitsOk: !visitsRes.error, studentsOk: !studentsRes.error };
+}
+
+export function getCachedVisits() {
+  return offlineDb.visits.toArray();
+}
+
+export function getCachedStudents() {
+  return offlineDb.students.toArray();
+}
+
+// Keeps the local mirror consistent with an optimistic UI update, so a
+// reload while still offline reflects the latest known state rather than
+// stale pre-action data.
+export async function updateCachedVisit(id, patch) {
+  const existing = await offlineDb.visits.get(id);
+  if (existing) await offlineDb.visits.put({ ...existing, ...patch });
+}
+
+// ── Reads with local fallback ───────────────────────────────────────────
+export async function lookupVisitByToken(token) {
+  const remote = await withOfflineTimeout(
+    supabase.from("visits").select("*, visit_students(*)").eq("qr_token", token).maybeSingle(),
+    2000
+  );
+  if (remote.ok && remote.data) return remote.data;
+
+  return offlineDb.visits.where("qr_token").equals(token).first();
+}
+
+// ── Outbox: durable queue for writes that failed/timed out live ────────
+let flushing = false;
+
+export async function enqueue(type, payload) {
+  const local_id = await offlineDb.outbox.add({
+    type,
+    payload,
+    status: "pending",
+    attempts: 0,
+    created_at: Date.now(),
+  });
+  flushOutbox(); // fire-and-forget attempt now; no-op if still offline
+  return local_id;
+}
+
+async function sendMutation(item) {
+  const { type, payload } = item;
+  if (type === "check_in") {
+    return supabase.rpc("check_in_visit", { p_qr_token: payload.qrToken });
+  }
+  if (type === "check_out") {
+    return supabase.rpc("check_out_visit", { p_qr_token: payload.qrToken });
+  }
+  if (type === "walk_in") {
+    return supabase.rpc("create_visit", payload.rpcArgs);
+  }
+  throw new Error(`Unknown outbox mutation type: ${type}`);
+}
+
+// Errcode P0001 from check_in_visit/check_out_visit means the transition
+// already happened (e.g. a previous attempt actually landed before the
+// response was lost) — treat that as a successful, idempotent no-op rather
+// than a real failure, so a retried outbox item doesn't get stuck forever.
+function isAlreadyAppliedError(error) {
+  return error?.code === "P0001";
+}
+
+export async function flushOutbox() {
+  if (flushing || !navigator.onLine) return;
+  flushing = true;
+  try {
+    const pending = await offlineDb.outbox.where("status").anyOf(["pending", "failed"]).toArray();
+
+    for (const item of pending) {
+      await offlineDb.outbox.update(item.local_id, { status: "syncing" });
+      try {
+        const { error } = await sendMutation(item);
+        if (error && !isAlreadyAppliedError(error)) throw error;
+        await offlineDb.outbox.delete(item.local_id);
+      } catch (err) {
+        await offlineDb.outbox.update(item.local_id, {
+          status: "failed",
+          attempts: item.attempts + 1,
+          last_error: String(err?.message || err),
+        });
+      }
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+export function getOutboxCount() {
+  return offlineDb.outbox.count();
+}

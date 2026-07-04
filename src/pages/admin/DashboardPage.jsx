@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import { collection, query, where, onSnapshot, orderBy } from "firebase/firestore";
-import { db } from "../../firebase";
+import { supabase } from "../../lib/supabaseClient";
 import Spinner from "../../components/Spinner";
 
 export default function DashboardPage() {
@@ -11,28 +10,41 @@ export default function DashboardPage() {
   // Today's date string — used to scope all queries to today
   const todayStr = new Date().toISOString().split("T")[0];
 
-  // ── Real-time listener for today's visits ─────────────────────────────────
-  // onSnapshot keeps this data live — no manual refresh needed.
-  // When a gate staff member checks someone in, this updates within ~1 second.
+  // ── Live-updating view of today's visits ───────────────────────────────────
+  // Supabase Realtime notifies us of any change to today's visits; we simply
+  // refetch the full list on each event rather than patching incrementally
+  // (simpler and safe at this data volume).
   useEffect(() => {
-    const q = query(
-      collection(db, "visits"),
-      where("visitDate", "==", todayStr),
-      orderBy("registeredAt", "desc")
-    );
+    let cancelled = false;
 
-    // onSnapshot returns an "unsubscribe" function.
-    // We return it from useEffect so React calls it on unmount,
-    // stopping the listener when the admin navigates away.
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setVisits(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    }, (err) => {
-      console.error("Snapshot error:", err);
-      setLoading(false);
-    });
+    async function fetchToday() {
+      const { data, error } = await supabase
+        .from("visits")
+        .select("*, visit_students(*)")
+        .eq("visit_date", todayStr)
+        .order("registered_at", { ascending: false });
 
-    return () => unsubscribe();
+      if (cancelled) return;
+      if (error) console.error("Fetch error:", error);
+      else setVisits(data);
+      setLoading(false);
+    }
+
+    fetchToday();
+
+    const channel = supabase
+      .channel("dashboard-visits")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "visits", filter: `visit_date=eq.${todayStr}` },
+        () => fetchToday()
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
   }, [todayStr]);
 
   // ── Derived stats ──────────────────────────────────────────────────────────
@@ -40,14 +52,14 @@ export default function DashboardPage() {
   const onCampus   = visits.filter(v => v.status === "checked_in").length;
   const checkedOut = visits.filter(v => v.status === "checked_out").length;
   const registered = visits.filter(v => v.status === "registered").length;
-  const walkIns    = visits.filter(v => v.createdBy === "gate_staff").length;
+  const walkIns    = visits.filter(v => v.created_by === "gate_staff").length;
 
   // Visits currently on campus — sorted by check-in time
   const onCampusVisits = visits
     .filter(v => v.status === "checked_in")
     .sort((a, b) => {
-      const aTime = a.checkedInAt?.toDate?.() || 0;
-      const bTime = b.checkedInAt?.toDate?.() || 0;
+      const aTime = a.checked_in_at ? new Date(a.checked_in_at) : 0;
+      const bTime = b.checked_in_at ? new Date(b.checked_in_at) : 0;
       return bTime - aTime;
     });
 
@@ -130,7 +142,7 @@ export default function DashboardPage() {
           ) : (
             <div style={styles.visitList}>
               {onCampusVisits.map(visit => (
-                <VisitRow key={visit.id} visit={visit} showTime="checkedInAt" />
+                <VisitRow key={visit.id} visit={visit} showTime="checked_in_at" />
               ))}
             </div>
           )}
@@ -147,7 +159,7 @@ export default function DashboardPage() {
           ) : (
             <div style={styles.visitList}>
               {recentActivity.map(visit => (
-                <VisitRow key={visit.id} visit={visit} showTime="registeredAt" showStatus />
+                <VisitRow key={visit.id} visit={visit} showTime="registered_at" showStatus />
               ))}
             </div>
           )}
@@ -174,19 +186,19 @@ function StatCard({ icon, label, value, color, bg }) {
 
 function VisitRow({ visit, showTime, showStatus = false }) {
   const timeField = visit[showTime];
-  const timeStr   = timeField?.toDate
-    ? timeField.toDate().toLocaleTimeString("en-GB", {
+  const timeStr   = timeField
+    ? new Date(timeField).toLocaleTimeString("en-GB", {
         hour: "2-digit", minute: "2-digit"
       })
     : "—";
 
-  const studentNames = visit.students?.map(s => s.studentName).join(", ") || "—";
-  const purpose = visit.purpose === "Other" ? visit.purposeOther : visit.purpose;
+  const studentNames = visit.visit_students?.map(s => s.student_name).join(", ") || "—";
+  const purpose = visit.purpose === "Other" ? visit.purpose_other : visit.purpose;
 
   return (
     <div style={rowStyles.row}>
       <div style={rowStyles.left}>
-        <p style={rowStyles.name}>{visit.visitorName}</p>
+        <p style={rowStyles.name}>{visit.visitor_name}</p>
         <p style={rowStyles.sub}>🎓 {studentNames}</p>
         <p style={rowStyles.sub}>📋 {purpose}</p>
       </div>

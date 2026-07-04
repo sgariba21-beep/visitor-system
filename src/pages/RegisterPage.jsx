@@ -1,10 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  collection, addDoc, getDocs,
-  query, where, orderBy, serverTimestamp
-} from "firebase/firestore";
-import { db } from "../firebase";
-import { generateVisitToken } from "../utils/generateToken";
+import { supabase } from "../lib/supabaseClient";
 import { QRCodeCanvas } from "qrcode.react";
 
 // ─── Purpose options ──────────────────────────────────────────────────────────
@@ -86,16 +81,15 @@ export default function RegisterPage() {
   async function performSearch(queryText) {
     setSearching(true);
     try {
-      // Firestore doesn't support full-text search natively.
-      // We fetch all active students and filter client-side.
-      // For a school with < 2000 students this is perfectly fine.
-      const q = query(
-        collection(db, "students"),
-        where("isActive", "==", true),
-        orderBy("name")
-      );
-      const snap = await getDocs(q);
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Postgres full-text search isn't wired up (no need at this scale) —
+      // we fetch all active students and filter client-side, same as before.
+      const { data, error } = await supabase
+        .from("students")
+        .select("*")
+        .eq("is_active", true)
+        .order("name");
+      if (error) throw error;
+      const all = data;
 
       // Filter locally by name or class
       const lower = queryText.toLowerCase();
@@ -119,8 +113,8 @@ export default function RegisterPage() {
   function selectStudent(student) {
     if (lockedOut) return;
 
-    // Block students without a studentId
-    if (!student.studentId && !student.studentCode) {
+    // Block students without a student_id
+    if (!student.student_id) {
       setError("This student does not have a Student ID configured. Please contact the school.");
       setSearchQuery("");
       setSearchResults([]);
@@ -139,7 +133,7 @@ export default function RegisterPage() {
   function verifyStudentId() {
     if (!pendingStudent) return;
 
-    const correctId = (pendingStudent.studentId || pendingStudent.studentCode || "").toLowerCase();
+    const correctId = (pendingStudent.student_id || "").toLowerCase();
     if (idInput.trim().toLowerCase() === correctId) {
       // Correct — add student to selected list
       setSelectedStudents(prev => [...prev, pendingStudent]);
@@ -201,44 +195,41 @@ export default function RegisterPage() {
     setSubmitting(true);
 
     try {
-      const qrToken = generateVisitToken(); // e.g. "VIS-A3X9K2"
+      // create_visit atomically inserts the visits row + one visit_students
+      // row per selected student, and generates + collision-checks the QR
+      // token server-side.
+      const { data, error: rpcError } = await supabase.rpc("create_visit", {
+        p_visitor_name:  visitorName.trim(),
+        p_visitor_phone: visitorPhone.trim(),
+        p_relationship:  relationship || "Not specified",
+        p_purpose:       purpose,
+        p_purpose_other: purpose === "Other" ? purposeOther.trim() : "",
+        p_visit_date:    visitDate,
+        p_status:        "registered",
+        p_created_by:    "self",
+        p_students: selectedStudents.map(s => ({
+          student_id:   s.id,
+          student_name: s.name,
+          class:        s.class,
+        })),
+      });
 
-      const visitData = {
-        // Visitor info
-        visitorName:  visitorName.trim(),
-        visitorPhone: visitorPhone.trim(),
-        relationship: relationship || "Not specified",
+      if (rpcError) throw rpcError;
 
-        // Purpose
-        purpose:      purpose,
-        purposeOther: purpose === "Other" ? purposeOther.trim() : "",
-
-        // Students — store a snapshot (name + class) so records
-        // remain readable even if a student is later deleted
+      // Show the success / QR screen. The students list is built from what
+      // we already have client-side rather than re-fetching the join.
+      setSuccessData({
+        visitorName:  data.visitor_name,
+        visitorPhone: data.visitor_phone,
+        purpose:      data.purpose,
+        purposeOther: data.purpose_other,
+        visitDate:    data.visit_date,
+        qrToken:      data.qr_token,
         students: selectedStudents.map(s => ({
-          studentId:   s.id,
           studentName: s.name,
           class:       s.class,
         })),
-
-        // Date & status
-        visitDate:    visitDate,       // "2025-04-05"
-        status:       "registered",    // registered → checked_in → checked_out
-        qrToken:      qrToken,
-
-        // Timestamps
-        registeredAt: serverTimestamp(),
-        checkedInAt:  null,
-        checkedOutAt: null,
-
-        // Who created this record
-        createdBy: "self", // "self" = parent pre-registered
-      };
-
-      const docRef = await addDoc(collection(db, "visits"), visitData);
-
-      // Show the success / QR screen
-      setSuccessData({ id: docRef.id, ...visitData, visitDate });
+      });
 
     } catch (err) {
       console.error("Registration failed:", err);

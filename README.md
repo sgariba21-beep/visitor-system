@@ -2,7 +2,7 @@
 
 A progressive web app (PWA) for managing school visitors — from parent pre-registration and QR-based gate check-in/out, to real-time admin dashboards and visit history analytics.
 
-Built with **React 19** and **Firebase**, with an offline-first gate scanning experience designed to work reliably on school networks.
+Built with **React 19** and **Supabase (Postgres)**, with a hand-rolled offline-first gate scanning experience designed to work reliably on school networks.
 
 ---
 
@@ -33,12 +33,14 @@ Built with **React 19** and **Firebase**, with an offline-first gate scanning ex
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 19, React Router 7 |
-| Database | Firebase Firestore (with IndexedDB offline persistence) |
-| Auth | Firebase Authentication (email/password) |
+| Database | Supabase (Postgres) |
+| Auth | Supabase Auth (email/password) |
+| Realtime | Supabase Realtime (`postgres_changes`) for the live dashboard |
+| Offline sync | Dexie (IndexedDB) — local cache + write outbox, scoped to the Gate page |
 | QR Scanning | html5-qrcode |
 | QR Generation | qrcode.react |
 | CSV Import | PapaParse |
-| Hosting | Firebase Hosting |
+| Hosting | Vercel |
 | PWA | Service Worker (cache-first assets, network-first HTML) |
 
 ---
@@ -49,7 +51,7 @@ Built with **React 19** and **Firebase**, with an offline-first gate scanning ex
 /register     — Parent/visitor pre-registration (public)
 /login        — Staff login (public)
 /gate         — Gate scanning hub (PIN-protected)
-/admin        — Admin area (requires Firebase Auth)
+/admin        — Admin area (requires Supabase Auth)
   /dashboard  — Live stats
   /students   — Student management
   /visits     — Visit history
@@ -62,7 +64,7 @@ Built with **React 19** and **Firebase**, with an offline-first gate scanning ex
 ### Prerequisites
 
 - Node.js 18+
-- A Firebase project with Firestore and Authentication enabled
+- A Supabase project with the schema in `supabase/migrations/` applied
 
 ### Installation
 
@@ -74,17 +76,13 @@ npm install
 
 ### Environment Variables
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (see `.env.example`):
 
 ```env
 REACT_APP_GATE_PIN=1234
 
-REACT_APP_FIREBASE_API_KEY=your_api_key
-REACT_APP_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-REACT_APP_FIREBASE_PROJECT_ID=your_project_id
-REACT_APP_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
-REACT_APP_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-REACT_APP_FIREBASE_APP_ID=your_app_id
+REACT_APP_SUPABASE_URL=https://your-project-ref.supabase.co
+REACT_APP_SUPABASE_ANON_KEY=your_supabase_publishable_or_anon_key
 ```
 
 `REACT_APP_GATE_PIN` is the 4-digit PIN gate staff use to unlock the scanner screen.
@@ -107,49 +105,59 @@ Opens at [http://localhost:3000](http://localhost:3000).
 npm run build
 ```
 
-### Deploy to Firebase Hosting
+### Deploy to Vercel
 
 ```bash
-npm install -g firebase-tools
-firebase login
-firebase deploy
+npm install -g vercel
+vercel login
+vercel --prod
 ```
 
-Requires a `.firebaserc` pointing to your Firebase project. The hosting config in `firebase.json` handles SPA routing rewrites and cache headers (1-year immutable for JS/CSS assets, no-cache for `index.html` and `sw.js`).
+`vercel.json` handles SPA routing rewrites and cache headers (1-year immutable for hashed JS/CSS under `/static`, no-cache for `index.html` and `sw.js`). Set `REACT_APP_SUPABASE_URL`, `REACT_APP_SUPABASE_ANON_KEY`, and `REACT_APP_GATE_PIN` as environment variables in the Vercel project settings — `.env` itself is never deployed.
 
 ---
 
-## Firestore Data Model
+## Database Schema (Postgres)
 
-### `visits` collection
+Defined in `supabase/migrations/`, applied in order. Apply with the Supabase CLI (`supabase db push`) or via the SQL editor in the Supabase dashboard.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `visitorName` | string | Full name of the visitor |
-| `visitorPhone` | string | Contact number |
-| `relationship` | string | Relationship to student(s) |
-| `purpose` | string | Reason for visit (8 categories + Other) |
-| `purposeOther` | string | Free-text if purpose is "Other" |
-| `students` | array | Snapshot of visited student(s) — `{studentId, studentName, class}` |
-| `visitDate` | string | `YYYY-MM-DD` — QR only activates on this date |
-| `status` | string | `registered` → `checked_in` → `checked_out` |
-| `qrToken` | string | Unique token e.g. `VIS-A3X9K2` |
-| `registeredAt` | Timestamp | When registration was submitted |
-| `checkedInAt` | Timestamp | Arrival scan time |
-| `checkedOutAt` | Timestamp | Departure scan time |
-| `createdBy` | string | `"self"` (parent) or `"gate_staff"` (walk-in) |
+### `students`
 
-> Student details are stored as a snapshot in each visit record so visit history remains intact even if a student is later removed.
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | uuid | Primary key |
+| `name` | text | Student full name |
+| `class` | text | Class/grade (e.g. "Form 3A") |
+| `student_id` | citext | Unique student identifier (case-insensitive, nullable). Enforced by a partial unique index — real DB constraint instead of a client-side check |
+| `is_active` | boolean | Controls visibility in registration search |
+| `created_at` | timestamptz | When added |
 
-### `students` collection
+### `visits`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Student full name |
-| `class` | string | Class/grade (e.g. "Form 3A") |
-| `studentId` | string | Unique student identifier (required for visitor verification) |
-| `isActive` | boolean | Controls visibility in registration search |
-| `createdAt` | Timestamp | When added |
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | uuid | Primary key |
+| `visitor_name` / `visitor_phone` | text | Visitor contact info |
+| `relationship` | text | Relationship to student(s) |
+| `purpose` / `purpose_other` | text | Reason for visit (category + free text if "Other") |
+| `visit_date` | date | QR only activates on this date |
+| `status` | enum | `registered` → `checked_in` → `checked_out` |
+| `qr_token` | text | Unique token e.g. `VIS-A3X9K2`, generated server-side with collision retry |
+| `registered_at` / `checked_in_at` / `checked_out_at` | timestamptz | Lifecycle timestamps |
+| `created_by` | text | `"self"` (parent) or `"gate_staff"` (walk-in) |
+
+### `visit_students` (junction table)
+
+Normalizes the visit↔student relationship (a visit can have multiple students, e.g. siblings) instead of an embedded array. `student_id` is a nullable FK (`on delete set null`) so hard-deleting a student doesn't break visit history — `student_name`/`class` are denormalized snapshot columns that preserve the historical record regardless.
+
+### Writes go through RPCs, not raw table access
+
+Since the Gate and Register pages have no Supabase Auth (same PIN/no-auth trust model as before), all anon-role writes go through three `SECURITY DEFINER` Postgres functions rather than direct table grants:
+
+- `create_visit(...)` — atomically inserts a `visits` row + its `visit_students` rows, generating and collision-checking the QR token server-side.
+- `check_in_visit(p_qr_token)` / `check_out_visit(p_qr_token)` — guarded status transitions; an illegal transition (e.g. double check-out) raises a clean error instead of corrupting state.
+
+RLS is enabled on all three tables: `anon` gets read-only access (active students only); `authenticated` (admin) gets full CRUD.
 
 ---
 
@@ -163,20 +171,20 @@ Alice Johnson,Form 3A,STU-001
 Bob Smith,Primary 5,STU-002
 ```
 
-`studentId` is required for visitors to verify students during registration.
+`studentId` is required for visitors to verify students during registration. Duplicate IDs (including duplicates within the same import batch) are rejected by the database's unique constraint and reported as skipped rows.
 
 ---
 
 ## Offline Support
 
-The gate page is designed to work without a network connection:
+Supabase's client has no built-in offline persistence, so the Gate page (the only place offline support is needed — Register and `/admin` pages require connectivity) uses a hand-rolled sync layer in `src/lib/offlineDb.js` and `src/lib/offlineSync.js`:
 
-1. **IndexedDB Persistence** — Firestore automatically caches reads locally
-2. **Cache Warming** — On entering the scanner, today's visits and active students are pre-fetched into the local cache
-3. **Optimistic UI** — Check-in/out updates the UI immediately; the write syncs to Firestore in the background
-4. **Write Queuing** — If offline, writes are queued locally and replayed when reconnected
-5. **Status Banner** — The gate page shows a live online/offline indicator
-6. **Service Worker** — Static assets served from cache; the app loads even with no connection
+1. **Cache Warming** — On entering the scanner, today's visits and active students are explicitly fetched into a local Dexie (IndexedDB) mirror
+2. **Optimistic UI** — Check-in/out and walk-in registration update the UI immediately, then race a short timeout against the live Supabase call
+3. **Write Outbox** — If the live call fails or times out, the mutation is durably queued in Dexie and retried on reconnect, on a periodic interval, and on page load — surfaced to staff as a visible "queued — will sync when online" state
+4. **Read Fallback** — QR lookup and manual search try Supabase first, then fall back to the Dexie cache if offline
+5. **Status Banner** — The gate page shows a live online/offline indicator and cache-readiness state
+6. **Service Worker** — Static assets served from cache; the app loads even with no connection (API calls bypass the service worker entirely — durability for those comes from the outbox, not the SW)
 
 ---
 
@@ -184,11 +192,11 @@ The gate page is designed to work without a network connection:
 
 | Area | Method |
 |------|--------|
-| Admin (`/admin/*`) | Firebase Auth — email/password. Protected via `ProtectedRoute` component. |
+| Admin (`/admin/*`) | Supabase Auth — email/password. Protected via `ProtectedRoute` component. |
 | Gate (`/gate`) | 4-digit PIN stored in `sessionStorage` (cleared on browser close). |
 | Registration (`/register`) | No auth required. |
 
-Staff accounts are created directly in the Firebase console (no public sign-up).
+Staff accounts are created directly in the Supabase dashboard (Authentication → Users) — there is no public sign-up.
 
 ---
 
@@ -197,27 +205,32 @@ Staff accounts are created directly in the Firebase console (no public sign-up).
 ```
 src/
 ├── App.js                   # Route definitions
-├── firebase.js              # Firebase init + Firestore persistence
 ├── index.js                 # Entry point + service worker registration
 ├── components/
 │   ├── ProtectedRoute.jsx   # Auth guard for admin routes
 │   └── Spinner.jsx          # Loading indicator
 ├── hooks/
-│   └── useAuth.js           # Firebase auth state hook
+│   └── useAuth.js           # Supabase auth state hook
+├── lib/
+│   ├── supabaseClient.js    # Supabase client init
+│   ├── offlineDb.js         # Dexie schema (visits/students mirror + outbox)
+│   └── offlineSync.js       # warmCache / enqueue / flushOutbox / read-fallback helpers
 ├── pages/
 │   ├── RegisterPage.jsx     # Visitor pre-registration
 │   ├── LoginPage.jsx        # Staff login
-│   ├── GatePage.jsx         # Gate scanning (check-in/out)
+│   ├── GatePage.jsx         # Gate scanning (check-in/out, offline-first)
 │   └── admin/
 │       ├── AdminLayout.jsx  # Sidebar layout
 │       ├── DashboardPage.jsx
 │       ├── StudentsPage.jsx
 │       └── VisitsPage.jsx
 └── utils/
-    └── generateToken.js     # QR token generator (VIS-XXXXXX)
+    └── generateToken.js     # QR token generator (used only for offline walk-in placeholders — real tokens are server-generated)
 public/
 ├── sw.js                    # Service worker
 └── manifest.json            # PWA manifest (start_url: /gate)
+supabase/
+└── migrations/               # Schema, RLS policies, and RPC functions (SQL)
 ```
 
 ---

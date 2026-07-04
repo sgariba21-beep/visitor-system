@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase";
+import { supabase } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import Spinner from "../components/Spinner";
 
@@ -17,17 +16,16 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      navigate("/admin/students"); // Redirect to admin panel on success
-    } catch (err) {
-      // Firebase error codes are descriptive — we translate them for users
-      if (err.code === "auth/user-not-found" || 
-          err.code === "auth/wrong-password" ||
-          err.code === "auth/invalid-credential") {
-        setError("Invalid email or password.");
-      } else {
-        setError("Something went wrong. Please try again.");
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
+        setError(
+          signInError.message.includes("Invalid login credentials")
+            ? "Invalid email or password."
+            : "Something went wrong. Please try again."
+        );
+        return;
       }
+      navigate("/admin/students"); // Redirect to admin panel on success
     } finally {
       setLoading(false);
     }

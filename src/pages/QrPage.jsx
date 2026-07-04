@@ -1,8 +1,5 @@
 import { useState, useEffect } from "react";
-import {
-  collection, getDocs, query, where,
-} from "firebase/firestore";
-import { db } from "../firebase";
+import { supabase } from "../lib/supabaseClient";
 import { QRCodeSVG } from "qrcode.react";
 
 export default function QrPage() {
@@ -24,19 +21,20 @@ export default function QrPage() {
 
   async function lookupVisit(qrToken) {
     try {
-      const q = query(
-        collection(db, "visits"),
-        where("qrToken", "==", qrToken)
-      );
-      const snap = await getDocs(q);
+      const { data, error: queryError } = await supabase
+        .from("visits")
+        .select("*, visit_students(*)")
+        .eq("qr_token", qrToken)
+        .maybeSingle();
 
-      if (snap.empty) {
+      if (queryError) throw queryError;
+
+      if (!data) {
         setError("Visit not found. This link may be invalid.");
         return;
       }
 
-      const doc = snap.docs[0];
-      setVisit({ id: doc.id, ...doc.data() });
+      setVisit(data);
     } catch (err) {
       console.error("Lookup failed:", err);
       setError("Could not load visit details. Please check your connection.");
@@ -88,7 +86,7 @@ export default function QrPage() {
 
   // ── Visit found — display QR ──────────────────────────────────────────────
   const displayPurpose = visit.purpose === "Other"
-    ? visit.purposeOther
+    ? visit.purpose_other
     : visit.purpose;
 
   return (
@@ -107,23 +105,23 @@ export default function QrPage() {
         {/* QR Code */}
         <div style={styles.qrWrapper}>
           <QRCodeSVG
-            value={visit.qrToken}
+            value={visit.qr_token}
             size={200}
             level="H"
             includeMargin={true}
           />
-          <p style={styles.qrToken}>{visit.qrToken}</p>
+          <p style={styles.qrToken}>{visit.qr_token}</p>
         </div>
 
         {/* Visit summary */}
         <div style={styles.summary}>
-          <Row label="Visitor"    value={visit.visitorName} />
-          <Row label="Phone"      value={visit.visitorPhone} />
-          <Row label="Visit Date" value={formatDate(visit.visitDate)} />
+          <Row label="Visitor"    value={visit.visitor_name} />
+          <Row label="Phone"      value={visit.visitor_phone} />
+          <Row label="Visit Date" value={formatDate(visit.visit_date)} />
           <Row label="Purpose"    value={displayPurpose} />
           <Row
             label="Student(s)"
-            value={visit.students.map(s => `${s.studentName} (${s.class})`).join(", ")}
+            value={visit.visit_students.map(s => `${s.student_name} (${s.class})`).join(", ")}
           />
           <Row label="Status" value={visit.status.replace("_", " ").toUpperCase()} />
         </div>
@@ -133,7 +131,7 @@ export default function QrPage() {
           <p style={styles.instructionTitle}>&#128204; Important</p>
           <ul style={styles.instructionList}>
             <li>Screenshot or save this QR code before closing this page.</li>
-            <li>This QR is only valid on <strong>{formatDate(visit.visitDate)}</strong>.</li>
+            <li>This QR is only valid on <strong>{formatDate(visit.visit_date)}</strong>.</li>
             <li>If you lose it, staff can look you up manually at the gate.</li>
           </ul>
         </div>

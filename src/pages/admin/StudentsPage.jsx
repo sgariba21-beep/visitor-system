@@ -1,9 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import {
-  collection, addDoc, getDocs, updateDoc,
-  deleteDoc, doc, serverTimestamp, query, orderBy
-} from "firebase/firestore";
-import { db } from "../../firebase";
+import { supabase } from "../../lib/supabaseClient";
 import Papa from "papaparse";
 import Spinner from "../../components/Spinner";
 
@@ -37,14 +33,23 @@ export default function StudentsPage() {
   async function loadStudents() {
     setLoading(true);
     try {
-      const q = query(collection(db, "students"), orderBy("name"));
-      const snap = await getDocs(q);
-      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const { data, error } = await supabase.from("students").select("*").order("name");
+      if (error) throw error;
+      setStudents(data);
     } catch (err) {
       showFeedback("error", "Failed to load students.");
     } finally {
       setLoading(false);
     }
+  }
+
+  // Looks up who already holds a given Student ID, for a friendlier
+  // duplicate-ID error message than the raw DB constraint gives us.
+  async function findDuplicateHolder(studentId, excludeId) {
+    let request = supabase.from("students").select("name").eq("student_id", studentId);
+    if (excludeId) request = request.neq("id", excludeId);
+    const { data } = await request.maybeSingle();
+    return data?.name;
   }
 
   // ── Feedback helper ────────────────────────────────────────────────────────
@@ -61,10 +66,10 @@ export default function StudentsPage() {
   }
 
   function openEdit(student) {
-    setForm({ 
-      name: student.name, 
-      class: student.class, 
-      studentId: student.studentId || student.studentCode || ""
+    setForm({
+      name: student.name,
+      class: student.class,
+      studentId: student.student_id || ""
     });
     setEditTarget(student);
     setMode("edit");
@@ -80,29 +85,26 @@ export default function StudentsPage() {
     e.preventDefault();
     if (!form.name.trim() || !form.class.trim()) return;
 
-    const newId = form.studentId.trim().toLowerCase();
-    if (newId) {
-      const duplicate = students.find(
-        s => (s.studentId || s.studentCode || "").toLowerCase() === newId
-      );
-      if (duplicate) {
-        showFeedback("error", `Student ID "${form.studentId.trim()}" is already assigned to ${duplicate.name}.`);
-        return;
-      }
-    }
-
     try {
-      const docRef = await addDoc(collection(db, "students"), {
-        name:        form.name.trim(),
-        class:       form.class.trim(),
-        studentId:   form.studentId.trim(),
-        isActive:    true,
-        createdAt:   serverTimestamp(),
-      });
-      // Optimistically add to local state (faster than re-fetching)
-      setStudents(prev => [...prev, { 
-        id: docRef.id, ...form, isActive: true 
-      }].sort((a, b) => a.name.localeCompare(b.name)));
+      const { data, error } = await supabase.from("students").insert({
+        name:       form.name.trim(),
+        class:      form.class.trim(),
+        student_id: form.studentId.trim() || null,
+      }).select().single();
+
+      if (error) {
+        if (error.code === "23505") {
+          const holder = await findDuplicateHolder(form.studentId.trim());
+          showFeedback("error",
+            `Student ID "${form.studentId.trim()}" is already assigned` +
+            (holder ? ` to ${holder}.` : ".")
+          );
+          return;
+        }
+        throw error;
+      }
+
+      setStudents(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
       showFeedback("success", `${form.name} added successfully.`);
       setMode("list");
     } catch {
@@ -114,28 +116,26 @@ export default function StudentsPage() {
   async function handleEdit(e) {
     e.preventDefault();
 
-    const newId = form.studentId.trim().toLowerCase();
-    if (newId) {
-      const duplicate = students.find(
-        s => s.id !== editTarget.id &&
-             (s.studentId || s.studentCode || "").toLowerCase() === newId
-      );
-      if (duplicate) {
-        showFeedback("error", `Student ID "${form.studentId.trim()}" is already assigned to ${duplicate.name}.`);
-        return;
-      }
-    }
-
     try {
-      const ref = doc(db, "students", editTarget.id);
-      await updateDoc(ref, {
-        name:        form.name.trim(),
-        class:       form.class.trim(),
-        studentId:   form.studentId.trim(),
-      });
-      setStudents(prev => prev.map(s =>
-        s.id === editTarget.id ? { ...s, ...form } : s
-      ));
+      const { data, error } = await supabase.from("students").update({
+        name:       form.name.trim(),
+        class:      form.class.trim(),
+        student_id: form.studentId.trim() || null,
+      }).eq("id", editTarget.id).select().single();
+
+      if (error) {
+        if (error.code === "23505") {
+          const holder = await findDuplicateHolder(form.studentId.trim(), editTarget.id);
+          showFeedback("error",
+            `Student ID "${form.studentId.trim()}" is already assigned` +
+            (holder ? ` to ${holder}.` : ".")
+          );
+          return;
+        }
+        throw error;
+      }
+
+      setStudents(prev => prev.map(s => (s.id === editTarget.id ? data : s)));
       showFeedback("success", `${form.name} updated.`);
       setMode("list");
     } catch {
@@ -153,9 +153,10 @@ export default function StudentsPage() {
     )) return;
 
     try {
-      await updateDoc(doc(db, "students", student.id), { isActive: false });
+      const { error } = await supabase.from("students").update({ is_active: false }).eq("id", student.id);
+      if (error) throw error;
       setStudents(prev => prev.map(s =>
-        s.id === student.id ? { ...s, isActive: false } : s
+        s.id === student.id ? { ...s, is_active: false } : s
       ));
       showFeedback("success", `${student.name} deactivated.`);
     } catch {
@@ -166,9 +167,10 @@ export default function StudentsPage() {
   // ── Reactivate ─────────────────────────────────────────────────────────────
   async function handleReactivate(student) {
     try {
-      await updateDoc(doc(db, "students", student.id), { isActive: true });
+      const { error } = await supabase.from("students").update({ is_active: true }).eq("id", student.id);
+      if (error) throw error;
       setStudents(prev => prev.map(s =>
-        s.id === student.id ? { ...s, isActive: true } : s
+        s.id === student.id ? { ...s, is_active: true } : s
       ));
       showFeedback("success", `${student.name} reactivated.`);
     } catch {
@@ -186,7 +188,8 @@ export default function StudentsPage() {
     if (!window.confirm(`Are you absolutely sure? This deletes all data for ${student.name}.`)) return;
 
     try {
-      await deleteDoc(doc(db, "students", student.id));
+      const { error } = await supabase.from("students").delete().eq("id", student.id);
+      if (error) throw error;
       setStudents(prev => prev.filter(s => s.id !== student.id));
       showFeedback("success", `${student.name} permanently deleted.`);
     } catch {
@@ -228,26 +231,24 @@ export default function StudentsPage() {
     setImporting(true);
     let added = 0;
     let skipped = 0;
-    // Track IDs seen so far (existing + already imported this batch)
-    const seenIds = new Set(
-      students.map(s => (s.studentId || s.studentCode || "").toLowerCase()).filter(Boolean)
-    );
     try {
       for (const row of csvRows) {
         if (!row.name?.trim() || !row.class?.trim()) continue; // skip blank rows
-        const rowId = (row.studentId || row.studentCode)?.trim() || "";
-        if (rowId && seenIds.has(rowId.toLowerCase())) {
-          skipped++;
-          continue;
-        }
-        await addDoc(collection(db, "students"), {
-          name:        row.name.trim(),
-          class:       row.class.trim(),
-          studentId:   rowId,
-          isActive:    true,
-          createdAt:   serverTimestamp(),
+        const rowId = row.studentId?.trim() || "";
+        // Duplicate-ID rejection is enforced by the DB's partial unique index,
+        // including against rows inserted earlier in this same batch.
+        const { error } = await supabase.from("students").insert({
+          name:       row.name.trim(),
+          class:      row.class.trim(),
+          student_id: rowId || null,
         });
-        if (rowId) seenIds.add(rowId.toLowerCase());
+        if (error) {
+          if (error.code === "23505") {
+            skipped++;
+            continue;
+          }
+          throw error;
+        }
         added++;
       }
       await loadStudents(); // Reload full list
@@ -258,7 +259,7 @@ export default function StudentsPage() {
       setMode("list");
       setCsvRows([]);
     } catch {
-      showFeedback("error", "Import failed partway. Check Firestore for partial data.");
+      showFeedback("error", "Import failed partway. Check the Students list for partial data.");
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -269,7 +270,7 @@ export default function StudentsPage() {
   const filtered = students.filter(s =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     s.class.toLowerCase().includes(search.toLowerCase()) ||
-    (s.studentId || s.studentCode || "").toLowerCase().includes(search.toLowerCase())
+    (s.student_id || "").toLowerCase().includes(search.toLowerCase())
   );
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -280,7 +281,7 @@ export default function StudentsPage() {
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Students</h1>
-          <p style={styles.subtitle}>{students.length} total · {students.filter(s => s.isActive).length} active</p>
+          <p style={styles.subtitle}>{students.length} total · {students.filter(s => s.is_active).length} active</p>
         </div>
         <div style={styles.headerActions}>
           {/* Hidden file input triggered by the Import button */}
@@ -380,7 +381,7 @@ export default function StudentsPage() {
                   <tr key={i}>
                     <td style={styles.td}>{row.name}</td>
                     <td style={styles.td}>{row.class}</td>
-                    <td style={styles.td}>{row.studentId || row.studentCode || "—"}</td>
+                    <td style={styles.td}>{row.studentId || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -440,26 +441,26 @@ export default function StudentsPage() {
               ) : (
                 filtered.map(student => (
                   <tr key={student.id} style={{
-                    opacity: student.isActive ? 1 : 0.5,
-                    background: student.isActive ? "transparent" : "#f9fafb"
+                    opacity: student.is_active ? 1 : 0.5,
+                    background: student.is_active ? "transparent" : "#f9fafb"
                   }}>
                     <td style={styles.td}>{student.name}</td>
                     <td style={styles.td}>{student.class}</td>
-                    <td style={styles.td}>{student.studentId || student.studentCode || "—"}</td>
+                    <td style={styles.td}>{student.student_id || "—"}</td>
                     <td style={styles.td}>
                       <span style={{
                         ...styles.badge,
-                        background: student.isActive ? "#dcfce7" : "#f3f4f6",
-                        color:      student.isActive ? "#166534" : "#6b7280",
+                        background: student.is_active ? "#dcfce7" : "#f3f4f6",
+                        color:      student.is_active ? "#166534" : "#6b7280",
                       }}>
-                        {student.isActive ? "Active" : "Inactive"}
+                        {student.is_active ? "Active" : "Inactive"}
                       </span>
                     </td>
                     <td style={{ ...styles.td, display: "flex", gap: 6, flexWrap: "wrap" }}>
                       <button style={styles.actionBtn} onClick={() => openEdit(student)}>
                         ✏️ Edit
                       </button>
-                      {student.isActive ? (
+                      {student.is_active ? (
                         <button
                           style={{ ...styles.actionBtn, color: "#d97706" }}
                           onClick={() => handleSoftDelete(student)}

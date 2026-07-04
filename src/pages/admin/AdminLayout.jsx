@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { signOut } from "firebase/auth";
-import { auth } from "../../firebase";
+import { supabase } from "../../lib/supabaseClient";
 import { useAuth } from "../../hooks/useAuth";
 
 const navItems = [
@@ -44,7 +43,7 @@ export default function AdminLayout() {
   }, [isMobile]);
 
   async function handleLogout() {
-    await signOut(auth);
+    await supabase.auth.signOut();
     navigate("/login");
   }
 
