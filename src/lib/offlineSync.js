@@ -33,7 +33,10 @@ export async function withOfflineTimeout(promise, ms = 2500) {
 export async function warmCache(pin) {
   const [visitsRes, studentsRes] = await Promise.all([
     supabase.rpc("gate_list_today_visits", { p_pin: pin }),
-    supabase.from("students").select("*").eq("is_active", true).order("name"),
+    // students is no longer anon-readable directly (see
+    // 0013_student_id_verification) — search_active_students('') lists
+    // all active students without exposing student_id.
+    supabase.rpc("search_active_students", { p_query: "" }),
   ]);
 
   if (!visitsRes.error && visitsRes.data) {

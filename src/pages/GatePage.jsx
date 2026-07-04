@@ -475,15 +475,26 @@ export default function GatePage() {
   async function searchWalkInStudents(queryText) {
     setWalkInSearching(true);
     try {
+      // Server-side search — students table is no longer anon-readable
+      // directly (see 0013_student_id_verification), so this goes through
+      // the same RPC RegisterPage uses. Results are already filtered by
+      // queryText when online; the offline/cached fallback still needs a
+      // local filter since the Dexie mirror holds the full active list.
       const remote = await withOfflineTimeout(
-        supabase.from("students").select("*").eq("is_active", true).order("name"),
+        supabase.rpc("search_active_students", { p_query: queryText }),
         2000
       );
-      const all = remote.ok ? remote.data : await getCachedStudents();
-      const lower = queryText.toLowerCase();
       const selectedIds = walkInSelectedStudents.map(s => s.id);
+
+      if (remote.ok) {
+        setWalkInStudentResults((remote.data || []).filter(s => !selectedIds.includes(s.id)));
+        return;
+      }
+
+      const cached = await getCachedStudents();
+      const lower = queryText.toLowerCase();
       setWalkInStudentResults(
-        all
+        cached
           .filter(s =>
             (s.name.toLowerCase().includes(lower) ||
             s.class.toLowerCase().includes(lower)) &&

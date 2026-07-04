@@ -42,12 +42,24 @@ export default function RegisterPage() {
   const qrWrapperRef                          = useRef(null);   // for QR canvas image export
 
   // ── Student ID verification state ────────────────────────────────────────────
+  // The actual comparison and attempt counting happen server-side (see
+  // verify_student_id) — this component never sees the real student_id.
+  // verificationSessionId is stable across a page refresh (sessionStorage)
+  // so a lockout can't be trivially reset by reloading the page.
   const [pendingStudent, setPendingStudent] = useState(null);  // student awaiting ID verification
   const [idInput, setIdInput]               = useState("");    // what the visitor typed
   const [idError, setIdError]               = useState("");    // per-attempt error message
-  const [failedAttempts, setFailedAttempts] = useState(0);     // session-wide counter
-  const [lockedOut, setLockedOut]           = useState(false); // true after 3 failures
-  const MAX_ATTEMPTS = 3;
+  const [verifying, setVerifying]           = useState(false);
+  const [lockedOut, setLockedOut]           = useState(false); // true once the server reports locked
+  const verificationSessionId = useRef(null);
+  if (!verificationSessionId.current) {
+    let sid = sessionStorage.getItem("id_verify_session");
+    if (!sid) {
+      sid = crypto.randomUUID();
+      sessionStorage.setItem("id_verify_session", sid);
+    }
+    verificationSessionId.current = sid;
+  }
 
   // ── Page state ──────────────────────────────────────────────────────────────
   const [submitting, setSubmitting]   = useState(false);
@@ -83,26 +95,14 @@ export default function RegisterPage() {
   async function performSearch(queryText) {
     setSearching(true);
     try {
-      // Postgres full-text search isn't wired up (no need at this scale) —
-      // we fetch all active students and filter client-side, same as before.
-      const { data, error } = await supabase
-        .from("students")
-        .select("*")
-        .eq("is_active", true)
-        .order("name");
+      // Server-side search — never returns the real student_id, only
+      // whether one is configured (has_student_id).
+      const { data, error } = await supabase.rpc("search_active_students", { p_query: queryText });
       if (error) throw error;
-      const all = data;
-
-      // Filter locally by name or class
-      const lower = queryText.toLowerCase();
-      const results = all.filter(s =>
-        s.name.toLowerCase().includes(lower) ||
-        s.class.toLowerCase().includes(lower)
-      );
 
       // Remove already-selected students from results
       const selectedIds = selectedStudents.map(s => s.id);
-      setSearchResults(results.filter(s => !selectedIds.includes(s.id)));
+      setSearchResults((data || []).filter(s => !selectedIds.includes(s.id)));
 
     } catch (err) {
       console.error("Search failed:", err);
@@ -115,8 +115,8 @@ export default function RegisterPage() {
   function selectStudent(student) {
     if (lockedOut) return;
 
-    // Block students without a student_id
-    if (!student.student_id) {
+    // Block students without a student_id configured
+    if (!student.has_student_id) {
       setError("This student does not have a Student ID configured. Please contact the school.");
       setSearchQuery("");
       setSearchResults([]);
@@ -132,32 +132,39 @@ export default function RegisterPage() {
   }
 
   // ── Verify the student ID the visitor typed ────────────────────────────────
-  function verifyStudentId() {
-    if (!pendingStudent) return;
+  // The comparison and attempt count live entirely server-side (see
+  // verify_student_id) — this page never learns the real student_id.
+  async function verifyStudentId() {
+    if (!pendingStudent || verifying) return;
+    setVerifying(true);
 
-    const correctId = (pendingStudent.student_id || "").toLowerCase();
-    if (idInput.trim().toLowerCase() === correctId) {
-      // Correct — add student to selected list
-      setSelectedStudents(prev => [...prev, pendingStudent]);
-      setPendingStudent(null);
-      setIdInput("");
-      setIdError("");
-    } else {
-      // Incorrect
-      const newCount = failedAttempts + 1;
-      setFailedAttempts(newCount);
+    try {
+      const { data, error } = await supabase.rpc("verify_student_id", {
+        p_session_id: verificationSessionId.current,
+        p_student_row_id: pendingStudent.id,
+        p_guess: idInput,
+      });
+      if (error) throw error;
 
-      if (newCount >= MAX_ATTEMPTS) {
+      if (data.ok) {
+        setSelectedStudents(prev => [...prev, pendingStudent]);
+        setPendingStudent(null);
+        setIdInput("");
+        setIdError("");
+      } else if (data.locked) {
         setLockedOut(true);
         setPendingStudent(null);
         setIdInput("");
         setIdError("");
       } else {
-        setIdError(
-          `Incorrect Student ID. ${MAX_ATTEMPTS - newCount} attempt(s) remaining.`
-        );
+        setIdError(`Incorrect Student ID. ${data.attempts_remaining} attempt(s) remaining.`);
         setIdInput("");
       }
+    } catch (err) {
+      console.error("Verification failed:", err);
+      setIdError("Could not verify right now. Check your connection and try again.");
+    } finally {
+      setVerifying(false);
     }
   }
 
@@ -254,8 +261,9 @@ export default function RegisterPage() {
     setSearchResults([]);
     setSuccessData(null);
     setError("");
-    setFailedAttempts(0);
-    setLockedOut(false);
+    // Note: lockedOut is intentionally left as-is — it reflects the
+    // server-tracked verification session, which "register another"
+    // doesn't reset (the same real lockout still applies).
     setPendingStudent(null);
     setIdInput("");
     setIdError("");
@@ -556,11 +564,11 @@ export default function RegisterPage() {
                   <p style={styles.verifyError}>{idError}</p>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                  <button type="button" style={styles.btnCancel} onClick={cancelVerification}>
+                  <button type="button" style={styles.btnCancel} onClick={cancelVerification} disabled={verifying}>
                     Cancel
                   </button>
-                  <button type="button" style={styles.btnVerify} onClick={verifyStudentId}>
-                    Verify
+                  <button type="button" style={styles.btnVerify} onClick={verifyStudentId} disabled={verifying}>
+                    {verifying ? "Checking..." : "Verify"}
                   </button>
                 </div>
               </div>
