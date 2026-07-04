@@ -178,7 +178,11 @@ export default function GatePage() {
     setCacheStatus("warming");
 
     const timer = setTimeout(async () => {
-      const { visitsOk, studentsOk } = await warmCache(todayStr);
+      const { visitsOk, studentsOk, visitsError } = await warmCache(sessionStorage.getItem("gate_pin"));
+      if (isPinRejectedError(visitsError)) {
+        forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
+        return;
+      }
       if (visitsOk) console.log("Cache warmed: today's visits loaded.");
       else console.log("Visits cache warm skipped (likely offline).");
       if (studentsOk) console.log("Cache warmed: students loaded.");
@@ -390,11 +394,18 @@ export default function GatePage() {
     try {
       // Postgres/PostgREST doesn't make an OR-across-fields query any nicer
       // than Firestore did, so we still fetch today's visits and filter
-      // client-side, falling back to the Dexie cache when offline.
+      // client-side, falling back to the Dexie cache when offline. The PIN
+      // is required since this is a broad listing of every visitor today
+      // (see gate_list_today_visits, 0012_gate_read_rpcs).
       const remote = await withOfflineTimeout(
-        supabase.from("visits").select("*, visit_students(*)").eq("visit_date", todayStr),
+        supabase.rpc("gate_list_today_visits", { p_pin: sessionStorage.getItem("gate_pin") }),
         2000
       );
+      if (isPinRejectedError(remote.error)) {
+        setManualSearching(false);
+        forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
+        return;
+      }
       const all = remote.ok ? remote.data : await getCachedVisits();
 
       const lower = manualQuery.trim().toLowerCase();

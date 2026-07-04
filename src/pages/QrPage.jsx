@@ -22,11 +22,12 @@ export default function QrPage() {
 
   async function lookupVisit(qrToken) {
     try {
+      // A single visit by its exact token is a capability lookup (scoped
+      // to whoever already holds this token), not a broad table read, so
+      // it's served by a narrow RPC rather than a direct table select —
+      // see get_visit_by_token in 0012_gate_read_rpcs.
       const { data, error: queryError } = await supabase
-        .from("visits")
-        .select("*, visit_students(*)")
-        .eq("qr_token", qrToken)
-        .maybeSingle();
+        .rpc("get_visit_by_token", { p_qr_token: qrToken });
 
       if (queryError) throw queryError;
 

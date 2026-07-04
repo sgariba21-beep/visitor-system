@@ -26,9 +26,13 @@ export async function withOfflineTimeout(promise, ms = 2500) {
 // Replaces Firestore's automatic offline cache warm: fetches today's visits
 // (with their joined visit_students) and active students, and mirrors them
 // into Dexie so Gate-page reads can fall back to them when offline.
-export async function warmCache(todayStr) {
+//
+// Today's visit list is PII for every visitor that day, so it's fetched
+// through the PIN-gated gate_list_today_visits RPC rather than a raw table
+// select — visits_anon_select no longer exists (see 0012_gate_read_rpcs).
+export async function warmCache(pin) {
   const [visitsRes, studentsRes] = await Promise.all([
-    supabase.from("visits").select("*, visit_students(*)").eq("visit_date", todayStr),
+    supabase.rpc("gate_list_today_visits", { p_pin: pin }),
     supabase.from("students").select("*").eq("is_active", true).order("name"),
   ]);
 
@@ -41,7 +45,7 @@ export async function warmCache(todayStr) {
     await offlineDb.students.bulkPut(studentsRes.data);
   }
 
-  return { visitsOk: !visitsRes.error, studentsOk: !studentsRes.error };
+  return { visitsOk: !visitsRes.error, studentsOk: !studentsRes.error, visitsError: visitsRes.error };
 }
 
 export function getCachedVisits() {
@@ -61,9 +65,11 @@ export async function updateCachedVisit(id, patch) {
 }
 
 // ── Reads with local fallback ───────────────────────────────────────────
+// A single visit by its exact token is scoped to whoever already holds
+// that token (a capability, not a broad listing), so no PIN is required.
 export async function lookupVisitByToken(token) {
   const remote = await withOfflineTimeout(
-    supabase.from("visits").select("*, visit_students(*)").eq("qr_token", token).maybeSingle(),
+    supabase.rpc("get_visit_by_token", { p_qr_token: token }),
     2000
   );
   if (remote.ok && remote.data) return remote.data;
