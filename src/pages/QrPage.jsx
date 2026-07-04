@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { QRCodeSVG } from "qrcode.react";
+import SchoolLogo from "../components/SchoolLogo";
 
 export default function QrPage() {
   const [visit, setVisit]     = useState(null);
@@ -95,7 +96,7 @@ export default function QrPage() {
 
         {/* Header */}
         <div style={styles.header}>
-          <div style={{ fontSize: 40 }}>🏫</div>
+          <SchoolLogo height={44} style={{ margin: "0 auto 8px" }} />
           <h1 style={styles.title}>Your Visit QR Code</h1>
           <p style={styles.subtitle}>
             Show this to staff at the gate on your visiting day

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuth } from "../../hooks/useAuth";
+import SchoolLogo from "../../components/SchoolLogo";
 
 const navItems = [
   { to: "/admin/dashboard", label: "Dashboard",     icon: "📊" },
@@ -65,7 +66,10 @@ export default function AdminLayout() {
           >
             {sidebarOpen ? "✕" : "☰"}
           </button>
-          <span style={styles.mobileBrand}>🏫 VMS Admin</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <SchoolLogo crestOnly height={24} />
+            <span style={styles.mobileBrand}>OLAG SHS Admin</span>
+          </div>
           <button style={styles.mobileLogout} onClick={handleLogout}>
             Sign Out
           </button>
@@ -83,8 +87,11 @@ export default function AdminLayout() {
         {/* Desktop brand header */}
         {!isMobile && (
           <div style={styles.brand}>
-            <span style={{ fontSize: 24 }}>🏫</span>
-            <span style={styles.brandName}>VMS Admin</span>
+            <SchoolLogo crestOnly height={32} />
+            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+              <span style={styles.brandName}>OLAG SHS</span>
+              <span style={styles.brandSub}>Visitor Admin</span>
+            </div>
           </div>
         )}
 
@@ -197,6 +204,7 @@ const styles = {
     borderBottom: "1px solid #1e293b",
   },
   brandName: { color: "#fff", fontWeight: 700, fontSize: 16 },
+  brandSub:  { color: "#64748b", fontWeight: 500, fontSize: 11 },
 
   nav: {
     flex: 1, padding: "16px 12px",

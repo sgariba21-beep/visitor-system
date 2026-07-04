@@ -2,6 +2,7 @@ import { useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import Spinner from "../components/Spinner";
+import SchoolLogo from "../components/SchoolLogo";
 
 export default function LoginPage() {
   const [email, setEmail]       = useState("");
@@ -34,9 +35,9 @@ export default function LoginPage() {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <div style={styles.logo}>🏫</div>
+        <SchoolLogo height={52} style={{ margin: "0 auto 12px" }} />
         <h1 style={styles.title}>Staff Login</h1>
-        <p style={styles.subtitle}>Visitor Management System</p>
+        <p style={styles.subtitle}>Our Lady of Grace SHS — Visitor Management System</p>
 
         <form onSubmit={handleLogin} style={styles.form}>
           <div style={styles.field}>

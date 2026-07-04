@@ -1,7 +1,7 @@
 {
-  "short_name": "VMS Gate",
-  "name": "Visitor Management System",
-  "description": "School visitor check-in and check-out system",
+  "short_name": "OLAG Gate",
+  "name": "Our Lady of Grace SHS - Visitor Management System",
+  "description": "Our Lady of Grace Senior High School visitor check-in and check-out system",
   "icons": [
     {
       "src": "favicon.ico",

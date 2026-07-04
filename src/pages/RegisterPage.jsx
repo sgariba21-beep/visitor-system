@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { QRCodeCanvas } from "qrcode.react";
+import SchoolLogo from "../components/SchoolLogo";
 
 // ─── Purpose options ──────────────────────────────────────────────────────────
 const PURPOSE_OPTIONS = [
@@ -407,7 +408,7 @@ export default function RegisterPage() {
 
         {/* Header */}
         <div style={styles.formHeader}>
-          <div style={{ fontSize: 40 }}>🏫</div>
+          <SchoolLogo height={44} style={{ margin: "0 auto 8px" }} />
           <h1 style={styles.formTitle}>Visitor Pre-Registration</h1>
           <p style={styles.formSubtitle}>
             Register before your visit to speed up gate entry

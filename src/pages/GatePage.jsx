@@ -7,6 +7,7 @@ import {
   getCachedPin, refreshGatePin,
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
+import SchoolLogo from "../components/SchoolLogo";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
@@ -573,7 +574,10 @@ export default function GatePage() {
 
       {/* ── Top bar ── */}
       <div style={styles.topBar}>
-        <span style={styles.topBarTitle}>🚦 Gate</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <SchoolLogo crestOnly height={28} />
+          <span style={styles.topBarTitle}>Gate</span>
+        </div>
         {screen !== "pin" && (
           <div style={{ display: "flex", gap: 8 }}>
             <button
@@ -621,9 +625,11 @@ export default function GatePage() {
       {screen === "pin" && (
         <div style={styles.centeredContent}>
           <div style={styles.pinCard}>
-            <div style={{ fontSize: 48, textAlign: "center", marginBottom: 8 }}>🔐</div>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+              <SchoolLogo crestOnly height={56} />
+            </div>
             <h2 style={styles.pinTitle}>Gate Access</h2>
-            <p style={styles.pinSubtitle}>Enter your PIN to continue</p>
+            <p style={styles.pinSubtitle}>Our Lady of Grace SHS — enter your PIN to continue</p>
             <form onSubmit={handlePinSubmit}>
               <input
                 style={styles.pinInput}
