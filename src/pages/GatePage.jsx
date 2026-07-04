@@ -165,6 +165,7 @@ export default function GatePage() {
       clearTimeout(timer);
       stopScanner();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
 
   async function startScanner() {
@@ -408,6 +409,7 @@ export default function GatePage() {
       searchWalkInStudents(walkInStudentQuery.trim());
     }, 400);
     return () => clearTimeout(walkInSearchTimeout.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walkInStudentQuery]);
 
   async function searchWalkInStudents(queryText) {

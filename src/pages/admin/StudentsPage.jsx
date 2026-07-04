@@ -28,6 +28,7 @@ export default function StudentsPage() {
   // ── Load students from Firestore on mount ──────────────────────────────────
   useEffect(() => {
     loadStudents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadStudents() {

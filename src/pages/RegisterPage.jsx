@@ -76,6 +76,7 @@ export default function RegisterPage() {
 
     // Cleanup timer if component unmounts or query changes again
     return () => clearTimeout(searchTimeout.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery]);
 
   async function performSearch(queryText) {
