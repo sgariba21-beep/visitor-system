@@ -4,11 +4,11 @@ import { generateVisitToken } from "../utils/generateToken";
 import {
   withOfflineTimeout, warmCache, getCachedStudents, getCachedVisits,
   updateCachedVisit, lookupVisitByToken, enqueue, flushOutbox,
+  getCachedPin, refreshGatePin,
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const CORRECT_PIN    = process.env.REACT_APP_GATE_PIN || "1234";
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
 
 export default function GatePage() {
@@ -20,6 +20,10 @@ export default function GatePage() {
   // ── PIN state ───────────────────────────────────────────────────────────────
   const [pinInput, setPinInput]   = useState("");
   const [pinError, setPinError]   = useState("");
+  // The PIN is admin-editable (gate_settings table), not a build-time
+  // constant. "1234" is just a sane bootstrap default before the cached or
+  // freshly-fetched value comes back — matches the table's own default.
+  const [correctPin, setCorrectPin] = useState("1234");
 
   // ── Scanner state ───────────────────────────────────────────────────────────
   const [scannerError, setScannerError] = useState("");
@@ -67,7 +71,7 @@ export default function GatePage() {
 
   function handlePinSubmit(e) {
     e.preventDefault();
-    if (pinInput === CORRECT_PIN) {
+    if (pinInput === correctPin) {
       // Store in sessionStorage so refreshing the page doesn't log them out
       sessionStorage.setItem("gate_auth", "true");
       setScreen("scanner");
@@ -83,6 +87,20 @@ export default function GatePage() {
     if (sessionStorage.getItem("gate_auth") === "true") {
       setScreen("scanner");
     }
+  }, []);
+
+  // Load the current gate PIN: an immediate read from the local cache (so
+  // it's available instantly, even offline), backed by a fresh fetch (so a
+  // PIN an admin just changed takes effect as soon as the device is online).
+  useEffect(() => {
+    let cancelled = false;
+    getCachedPin().then((cached) => {
+      if (cached && !cancelled) setCorrectPin(cached);
+    });
+    refreshGatePin().then((fresh) => {
+      if (fresh && !cancelled) setCorrectPin(fresh);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   // ── PWA install prompt ───────────────────────────────────────────────────

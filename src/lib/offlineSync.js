@@ -71,6 +71,26 @@ export async function lookupVisitByToken(token) {
   return offlineDb.visits.where("qr_token").equals(token).first();
 }
 
+// ── Gate PIN caching ─────────────────────────────────────────────────────
+// The PIN lives in gate_settings (admin-editable) instead of a build-time
+// env var, but the Gate page's PIN screen must still work offline — so we
+// cache the last-known value locally, same read-fallback pattern as visits
+// and students.
+export async function getCachedPin() {
+  const row = await offlineDb.settings.get("gate_pin");
+  return row?.value ?? null;
+}
+
+export async function refreshGatePin() {
+  const remote = await withOfflineTimeout(
+    supabase.from("gate_settings").select("pin").eq("id", true).single(),
+    2000
+  );
+  if (!remote.ok || !remote.data) return null;
+  await offlineDb.settings.put({ key: "gate_pin", value: remote.data.pin });
+  return remote.data.pin;
+}
+
 // ── Outbox: durable queue for writes that failed/timed out live ────────
 let flushing = false;
 

@@ -9,4 +9,5 @@ offlineDb.version(1).stores({
   visits: "id, qr_token, visit_date, status",
   students: "id, name, class",
   outbox: "++local_id, type, status, created_at",
+  settings: "key",
 });

@@ -7,6 +7,7 @@ const navItems = [
   { to: "/admin/dashboard", label: "Dashboard",     icon: "📊" },
   { to: "/admin/students",  label: "Students",      icon: "🎓" },
   { to: "/admin/visits",    label: "Visit History", icon: "📋" },
+  { to: "/admin/settings",  label: "Settings",      icon: "⚙️" },
 ];
 
 // ─── Reactive media query hook ────────────────────────────────────────────────

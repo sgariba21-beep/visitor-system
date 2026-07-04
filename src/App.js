@@ -8,6 +8,7 @@ import StudentsPage   from "./pages/admin/StudentsPage";
 import DashboardPage  from "./pages/admin/DashboardPage";
 import ProtectedRoute from "./components/ProtectedRoute";
 import VisitsPage from "./pages/admin/VisitsPage";
+import SettingsPage from "./pages/admin/SettingsPage";
 
 console.log("APP RENDERING");
 
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="students"  element={<StudentsPage />} />
           <Route path="visits"    element={<VisitsPage />} />
+          <Route path="settings"  element={<SettingsPage />} />
         </Route>
 
         {/* Gate (will be protected differently — PIN based) */}
