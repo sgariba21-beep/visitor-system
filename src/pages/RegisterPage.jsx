@@ -2,26 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { QRCodeCanvas } from "qrcode.react";
 import SchoolLogo from "../components/SchoolLogo";
-
-// ─── Purpose options ──────────────────────────────────────────────────────────
-const PURPOSE_OPTIONS = [
-  "General Visit",
-  "PTA Meeting",
-  "Academic Concerns",
-  "Medical",
-  "Financial",
-  "Pickup / Leave",
-  "Other",
-];
-
-// ─── Relationship options ─────────────────────────────────────────────────────
-const RELATIONSHIP_OPTIONS = [
-  "Parent / Guardian",
-  "Sibling",
-  "Relative",
-  "Family Friend",
-  "Other",
-];
+import { PURPOSE_OPTIONS, RELATIONSHIP_OPTIONS } from "../constants/visitOptions";
 
 export default function RegisterPage() {
 

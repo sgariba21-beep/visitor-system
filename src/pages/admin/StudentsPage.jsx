@@ -182,8 +182,9 @@ export default function StudentsPage() {
   // ── Hard delete (permanent) ────────────────────────────────────────────────
   async function handleHardDelete(student) {
     if (!window.confirm(
-      `⚠️ PERMANENTLY delete ${student.name}? ` +
-      `This cannot be undone and may break visit history records.`
+      `⚠️ PERMANENTLY delete ${student.name}? This cannot be undone. ` +
+      `Visit history is preserved (names and classes are kept on those records), ` +
+      `but this student can no longer be selected for new visits.`
     )) return;
     // Second confirmation for destructive action
     if (!window.confirm(`Are you absolutely sure? This deletes all data for ${student.name}.`)) return;

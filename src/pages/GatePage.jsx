@@ -9,6 +9,7 @@ import {
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 import SchoolLogo from "../components/SchoolLogo";
+import { PURPOSE_OPTIONS, RELATIONSHIP_OPTIONS } from "../constants/visitOptions";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
@@ -36,6 +37,7 @@ export default function GatePage() {
 
   // ── Manual lookup state ─────────────────────────────────────────────────────
   const [manualQuery, setManualQuery]       = useState("");
+  const [manualSearchDate, setManualSearchDate] = useState(""); // "" = today
   const [manualResults, setManualResults]   = useState([]);
   const [manualSearching, setManualSearching] = useState(false);
   const [manualError, setManualError]       = useState("");
@@ -396,10 +398,15 @@ export default function GatePage() {
   // MANUAL LOOKUP FUNCTIONS
   // ────────────────────────────────────────────────────────────────────────────
 
-  // Search visits by visitor name or phone for today's date
+  // Search visits by visitor name or phone, for the selected date (today
+  // by default) — widened from today-only so staff have a real path to
+  // find a visitor whose scanned QR was rejected for a date mismatch,
+  // instead of manual lookup being a dead end for exactly that case.
   async function handleManualSearch(e) {
     e.preventDefault();
     if (!manualQuery.trim()) return;
+
+    const searchDate = manualSearchDate || todayStr;
 
     setManualSearching(true);
     setManualError("");
@@ -407,20 +414,29 @@ export default function GatePage() {
 
     try {
       // Postgres/PostgREST doesn't make an OR-across-fields query any nicer
-      // than Firestore did, so we still fetch today's visits and filter
-      // client-side, falling back to the Dexie cache when offline. The PIN
-      // is required since this is a broad listing of every visitor today
-      // (see gate_list_today_visits, 0012_gate_read_rpcs).
+      // than Firestore did, so we still fetch the selected date's visits
+      // and filter client-side, falling back to the Dexie cache when
+      // offline (which only ever mirrors today's visits). The PIN is
+      // required since this is a broad listing of every visitor that day
+      // (see gate_list_visits, 0012/0016_*).
       const remote = await withOfflineTimeout(
-        supabase.rpc("gate_list_today_visits", { p_pin: sessionStorage.getItem("gate_pin") }),
+        supabase.rpc("gate_list_visits", { p_pin: sessionStorage.getItem("gate_pin"), p_date: searchDate }),
         2000
       );
       if (isPinRejectedError(remote.error)) {
-        setManualSearching(false);
         forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
         return;
       }
-      const all = remote.ok ? remote.data : await getCachedVisits();
+
+      let all;
+      if (remote.ok) {
+        all = remote.data;
+      } else if (searchDate === todayStr) {
+        all = await getCachedVisits();
+      } else {
+        setManualError("Can't search other dates while offline — only today's visits are cached.");
+        return;
+      }
 
       const lower = manualQuery.trim().toLowerCase();
       const results = all.filter(v =>
@@ -432,8 +448,9 @@ export default function GatePage() {
       );
 
       if (results.length === 0) {
+        const dateLabel = searchDate === todayStr ? "today" : formatDate(searchDate);
         setManualError(
-          "No visits found for today matching that name, phone, or student. " +
+          `No visits found for ${dateLabel} matching that name, phone, or student. ` +
           "Use 'Walk-in Registration' below to create a new visit."
         );
       } else {
@@ -462,6 +479,7 @@ export default function GatePage() {
   // Reset manual panel when navigating away
   function resetManual() {
     setManualQuery("");
+    setManualSearchDate("");
     setManualResults([]);
     setManualError("");
     setManualMode("search");
@@ -905,11 +923,23 @@ export default function GatePage() {
             {manualMode === "search" && (
               <div>
                 <p style={styles.manualHint}>
-                  Search today's registrations by visitor name, phone number,
-                  or student name.
+                  Search registrations by visitor name, phone number, or
+                  student name. Defaults to today — pick another date if
+                  a scanned code was rejected for the wrong day.
                 </p>
 
                 <form onSubmit={handleManualSearch} style={{ marginBottom: 16 }}>
+                <input
+                  type="date"
+                  style={{
+                    ...styles.darkInput,
+                    width: "100%",
+                    marginBottom: 8,
+                    color: "#f8fafc",
+                  }}
+                  value={manualSearchDate}
+                  onChange={e => setManualSearchDate(e.target.value)}
+                />
                 <input
                   style={{
                     ...styles.darkInput,
@@ -1024,8 +1054,7 @@ export default function GatePage() {
                     }
                   >
                     <option value="">— Select —</option>
-                    {["Parent / Guardian","Sibling","Relative",
-                      "Family Friend","Other"].map(r => (
+                    {RELATIONSHIP_OPTIONS.map(r => (
                       <option key={r} value={r}>{r}</option>
                     ))}
                   </select>
@@ -1041,8 +1070,7 @@ export default function GatePage() {
                     required
                   >
                     <option value="">— Select —</option>
-                    {["General Visit","Academic Concerns","Medical","General Visit",
-                      "Financial","Pickup / Leave","Other"].map(p => (
+                    {PURPOSE_OPTIONS.map(p => (
                       <option key={p} value={p}>{p}</option>
                     ))}
                   </select>

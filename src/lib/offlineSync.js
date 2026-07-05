@@ -28,11 +28,12 @@ export async function withOfflineTimeout(promise, ms = 2500) {
 // into Dexie so Gate-page reads can fall back to them when offline.
 //
 // Today's visit list is PII for every visitor that day, so it's fetched
-// through the PIN-gated gate_list_today_visits RPC rather than a raw table
+// through the PIN-gated gate_list_visits RPC rather than a raw table
 // select — visits_anon_select no longer exists (see 0012_gate_read_rpcs).
+// Omitting p_date defaults to today server-side.
 export async function warmCache(pin) {
   const [visitsRes, studentsRes] = await Promise.all([
-    supabase.rpc("gate_list_today_visits", { p_pin: pin }),
+    supabase.rpc("gate_list_visits", { p_pin: pin }),
     // students is no longer anon-readable directly (see
     // 0013_student_id_verification) — search_active_students('') lists
     // all active students without exposing student_id.

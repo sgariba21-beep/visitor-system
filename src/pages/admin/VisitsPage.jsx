@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import Spinner from "../../components/Spinner";
+import { PURPOSE_OPTIONS as BASE_PURPOSE_OPTIONS } from "../../constants/visitOptions";
 
 const STATUS_OPTIONS = [
   { value: "all",         label: "All Statuses" },
@@ -9,10 +10,9 @@ const STATUS_OPTIONS = [
   { value: "checked_out", label: "Departed"     },
 ];
 
-const PURPOSE_OPTIONS = [
-  "All Purposes", "General Visit", "Academic Concerns","PTA Meeting",
-  "Medical", "Financial", "Pickup / Leave", "Other",
-];
+// Filter dropdown adds "All Purposes" on top of the shared, canonical list
+// used everywhere a purpose is actually recorded (RegisterPage, GatePage).
+const PURPOSE_OPTIONS = ["All Purposes", ...BASE_PURPOSE_OPTIONS];
 
 export default function VisitsPage() {
 
