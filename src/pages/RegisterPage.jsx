@@ -242,7 +242,11 @@ export default function RegisterPage() {
 
     } catch (err) {
       console.error("Registration failed:", err);
-      setError("Registration failed. Please check your connection and try again.");
+      if (err?.code === "P0006") {
+        setError(err.message); // "Visit date cannot be in the past" / "...too far in the future"
+      } else {
+        setError("Registration failed. Please check your connection and try again.");
+      }
     } finally {
       setSubmitting(false);
     }

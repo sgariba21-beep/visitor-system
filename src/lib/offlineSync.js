@@ -123,6 +123,15 @@ export function isPinRejectedError(error) {
   return error?.code === "P0005";
 }
 
+// isDateMismatchError: errcode P0003 means check_in_visit found the token
+// but the visit's date doesn't match "today" as computed by the database.
+// This is never a transient/network problem — retrying later won't change
+// a visit's stored date — so it must not be optimistically queued to the
+// outbox as if it will eventually succeed.
+export function isDateMismatchError(error) {
+  return error?.code === "P0003";
+}
+
 async function sendMutation(item) {
   const { type, payload } = item;
   if (type === "check_in") {

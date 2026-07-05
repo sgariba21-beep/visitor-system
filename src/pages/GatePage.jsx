@@ -5,6 +5,7 @@ import {
   withOfflineTimeout, warmCache, getCachedStudents, getCachedVisits,
   updateCachedVisit, lookupVisitByToken, enqueue, flushOutbox,
   getCachedPin, cacheConfirmedPin, clearCachedPin, isPinRejectedError,
+  isDateMismatchError,
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 import SchoolLogo from "../components/SchoolLogo";
@@ -361,6 +362,19 @@ export default function GatePage() {
 
     if (isPinRejectedError(result.error)) {
       forcePinReentry("The gate PIN has changed. Please enter the new PIN to keep working.");
+      return;
+    }
+
+    if (isDateMismatchError(result.error)) {
+      // Not a network hiccup — the server has authoritatively rejected
+      // this token for today. Retrying later won't change that, so roll
+      // back the optimistic update instead of queuing a doomed retry.
+      setVisitDoc(prev => ({ ...prev, status: "registered", [timestampField]: null }));
+      await updateCachedVisit(visitDocId, { status: "registered", [timestampField]: null });
+      setActionFeedback({
+        type: "error",
+        message: "This visit's date doesn't match today according to the server. Use manual lookup or contact the office.",
+      });
       return;
     }
 
