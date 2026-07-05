@@ -66,6 +66,16 @@ export default function RegisterPage() {
   const [error, setError]             = useState("");
   const [successData, setSuccessData] = useState(null); // holds visit doc after submission
 
+  // Stable per-attempt key so a retried submission (e.g. the first request
+  // actually landed but the response was lost on a slow connection) returns
+  // the same visit instead of creating a duplicate — see create_visit's
+  // p_idempotency_key. Only regenerated when starting a genuinely new
+  // registration (registerAnother), never on a retry of the same attempt.
+  const idempotencyKey = useRef(null);
+  if (!idempotencyKey.current) {
+    idempotencyKey.current = crypto.randomUUID();
+  }
+
   // ── Date boundaries ─────────────────────────────────────────────────────────
   // Parents can only pick today or a future date
   const today = new Date().toISOString().split("T")[0]; // "2025-04-05"
@@ -221,6 +231,7 @@ export default function RegisterPage() {
           student_name: s.name,
           class:        s.class,
         })),
+        p_idempotency_key: idempotencyKey.current,
       });
 
       if (rpcError) throw rpcError;
@@ -271,6 +282,10 @@ export default function RegisterPage() {
     setPendingStudent(null);
     setIdInput("");
     setIdError("");
+    // A fresh registration needs a fresh idempotency key — reusing the
+    // previous one would make create_visit think this is a retry of the
+    // last (already-completed) registration and just hand that back.
+    idempotencyKey.current = crypto.randomUUID();
   }
 
   // ────────────────────────────────────────────────────────────────────────────

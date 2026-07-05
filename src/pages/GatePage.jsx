@@ -554,6 +554,11 @@ export default function GatePage() {
           class:        s.class,
         })),
         p_pin: sessionStorage.getItem("gate_pin"),
+        // Generated once for this attempt and carried through unchanged
+        // into the outbox payload below, so a later retry (or this same
+        // request landing but its response being lost) resolves to the
+        // same visit instead of registering the walk-in twice.
+        p_idempotency_key: crypto.randomUUID(),
       };
 
       const result = await withOfflineTimeout(supabase.rpc("create_visit", rpcArgs));
