@@ -62,6 +62,20 @@ export default function RegisterPage() {
   const [error, setError]             = useState("");
   const [successData, setSuccessData] = useState(null); // holds visit doc after submission
 
+  // ── "Manage my registration" (lost QR / cancel) ─────────────────────────────
+  // Self-service lookup by phone + date — the only fallback previously
+  // advertised was "staff can look you up at the gate," which requires
+  // already being there. find_my_visit/cancel_visit both require knowing
+  // the exact phone number already on file, so this isn't a broad lookup.
+  const [showManage, setShowManage]     = useState(false);
+  const [managePhone, setManagePhone]   = useState("");
+  const [manageDate, setManageDate]     = useState("");
+  const [manageResults, setManageResults] = useState(null); // null = not searched yet
+  const [manageSearching, setManageSearching] = useState(false);
+  const [manageError, setManageError]   = useState("");
+  const [cancellingId, setCancellingId] = useState(null);
+  const [manageQrFor, setManageQrFor]   = useState(null); // visit id currently showing its QR
+
   // Stable per-attempt key so a retried submission (e.g. the first request
   // actually landed but the response was lost on a slow connection) returns
   // the same visit instead of creating a duplicate — see create_visit's
@@ -283,6 +297,59 @@ export default function RegisterPage() {
     // previous one would make create_visit think this is a retry of the
     // last (already-completed) registration and just hand that back.
     idempotencyKey.current = crypto.randomUUID();
+  }
+
+  // ── Manage my registration ──────────────────────────────────────────────────
+  async function handleManageSearch(e) {
+    e.preventDefault();
+    if (!managePhone.trim() || !manageDate) return;
+
+    setManageSearching(true);
+    setManageError("");
+    setManageResults(null);
+    setManageQrFor(null);
+
+    try {
+      const { data, error: rpcError } = await supabase.rpc("find_my_visit", {
+        p_visitor_phone: managePhone.trim(),
+        p_visit_date: manageDate,
+      });
+      if (rpcError) throw rpcError;
+
+      if (!data || data.length === 0) {
+        setManageError("No registration found for that phone number and date.");
+      } else {
+        setManageResults(data);
+      }
+    } catch (err) {
+      console.error("Lookup failed:", err);
+      setManageError("Could not look up your registration. Check your connection and try again.");
+    } finally {
+      setManageSearching(false);
+    }
+  }
+
+  async function handleCancelVisit(visit) {
+    if (!window.confirm(
+      `Cancel your registration for ${formatDate(visit.visit_date)}? This can't be undone.`
+    )) return;
+
+    setCancellingId(visit.id);
+    try {
+      const { data, error: rpcError } = await supabase.rpc("cancel_visit", {
+        p_visit_id: visit.id,
+        p_visitor_phone: managePhone.trim(),
+      });
+      if (rpcError) throw rpcError;
+      // cancel_visit returns the plain visits row (no joined visit_students,
+      // unlike find_my_visit) — merge so the student names stay displayed.
+      setManageResults(prev => prev.map(v => v.id === visit.id ? { ...v, ...data } : v));
+    } catch (err) {
+      console.error("Cancel failed:", err);
+      setManageError("Could not cancel your registration. Please try again or contact the school.");
+    } finally {
+      setCancellingId(null);
+    }
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -670,6 +737,95 @@ export default function RegisterPage() {
           </button>
 
         </form>
+
+        {/* ── Manage an existing registration (lost QR / cancel) ── */}
+        <div style={styles.manageSection}>
+          <button
+            type="button"
+            style={styles.manageToggle}
+            onClick={() => setShowManage(prev => !prev)}
+          >
+            {showManage ? "▲ Hide" : "▼"} Already registered? Find your QR code or cancel a visit
+          </button>
+
+          {showManage && (
+            <div style={styles.managePanel}>
+              <form onSubmit={handleManageSearch} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  style={{ ...styles.input, flex: 1, minWidth: 160 }}
+                  type="tel"
+                  value={managePhone}
+                  onChange={e => setManagePhone(e.target.value)}
+                  placeholder="Phone number used to register"
+                  required
+                />
+                <input
+                  style={{ ...styles.input, flex: 1, minWidth: 140 }}
+                  type="date"
+                  value={manageDate}
+                  onChange={e => setManageDate(e.target.value)}
+                  required
+                />
+                <button
+                  type="submit"
+                  style={{ ...styles.btnPrimary, marginTop: 0, width: "auto", padding: "10px 20px" }}
+                  disabled={manageSearching}
+                >
+                  {manageSearching ? "Searching..." : "Find"}
+                </button>
+              </form>
+
+              {manageError && <p style={styles.manageError}>{manageError}</p>}
+
+              {manageResults?.map(visit => (
+                <div key={visit.id} style={styles.manageResult}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <p style={styles.manageResultTitle}>
+                        {visit.visit_students?.map(s => s.student_name).join(", ") || "—"}
+                      </p>
+                      <p style={styles.manageResultSub}>
+                        {formatDate(visit.visit_date)} · {
+                          visit.cancelled_at ? "Cancelled"
+                          : visit.status === "registered" ? "Not yet arrived"
+                          : visit.status === "checked_in" ? "On campus"
+                          : "Departed"
+                        }
+                      </p>
+                    </div>
+                  </div>
+
+                  {!visit.cancelled_at && visit.status === "registered" && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        style={styles.manageActionBtn}
+                        onClick={() => setManageQrFor(prev => prev === visit.id ? null : visit.id)}
+                      >
+                        {manageQrFor === visit.id ? "Hide QR" : "Show QR"}
+                      </button>
+                      <button
+                        type="button"
+                        style={{ ...styles.manageActionBtn, color: "#dc2626", borderColor: "#fca5a5" }}
+                        onClick={() => handleCancelVisit(visit)}
+                        disabled={cancellingId === visit.id}
+                      >
+                        {cancellingId === visit.id ? "Cancelling..." : "Cancel this visit"}
+                      </button>
+                    </div>
+                  )}
+
+                  {manageQrFor === visit.id && (
+                    <div style={{ ...styles.qrBox, marginTop: 12, padding: 16 }}>
+                      <QRCodeCanvas value={visit.qr_token} size={160} level="H" includeMargin />
+                      <p style={styles.qrToken}>{visit.qr_token}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -837,6 +993,29 @@ const styles = {
     width: "100%", padding: "12px", fontSize: 15, fontWeight: 600,
     background: "#f1f5f9", color: "#475569",
     border: "none", borderRadius: 12, cursor: "pointer", marginTop: 16,
+  },
+
+  // "Manage my registration" (lost QR / cancel)
+  manageSection: { marginTop: 20, borderTop: "1px solid #f1f5f9", paddingTop: 16 },
+  manageToggle: {
+    width: "100%", textAlign: "left", background: "none", border: "none",
+    color: "#2563eb", fontSize: 14, fontWeight: 600, cursor: "pointer", padding: 0,
+  },
+  managePanel: { marginTop: 14 },
+  manageError: {
+    background: "#fef2f2", border: "1px solid #fca5a5", color: "#dc2626",
+    padding: "10px 14px", borderRadius: 8, fontSize: 13, marginTop: 10,
+  },
+  manageResult: {
+    background: "#f8fafc", border: "1px solid #e5e7eb", borderRadius: 10,
+    padding: "12px 14px", marginTop: 10,
+  },
+  manageResultTitle: { fontSize: 14, fontWeight: 700, color: "#0f172a" },
+  manageResultSub: { fontSize: 12, color: "#6b7280", marginTop: 2 },
+  manageActionBtn: {
+    padding: "6px 12px", background: "#fff", color: "#374151",
+    border: "1.5px solid #d1d5db", borderRadius: 8, cursor: "pointer",
+    fontSize: 12, fontWeight: 600,
   },
 
   // Success screen

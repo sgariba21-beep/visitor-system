@@ -258,13 +258,15 @@ begin
 end;
 $$;
 
--- Postgres grants EXECUTE on a new function to PUBLIC by default -- unlike
--- tables, which have no default privileges. Without this explicit revoke,
--- the `grant ... to authenticated` above would NOT actually be restrictive:
--- anon inherits PUBLIC's privileges too, so it could call this "admin-only"
--- RPC directly regardless of the intended grant. (Caught by testing this
--- migration against the live anon key before shipping it.)
+-- Postgres grants EXECUTE on a new function to PUBLIC by default, AND
+-- Supabase's default privileges on the public schema separately grant
+-- execute to anon/authenticated directly. Without both explicit revokes
+-- below, the `grant ... to authenticated` above would NOT actually be
+-- restrictive: anon could still call this "admin-only" RPC regardless of
+-- the intended grant. (Caught by testing this migration against the live
+-- anon key before shipping it.)
 revoke execute on function public.admin_search_visits from public;
+revoke execute on function public.admin_search_visits from anon;
 grant execute on function public.admin_search_visits to authenticated;
 
 -- ── bulk_import_students: one round trip instead of one per row ──
@@ -302,6 +304,7 @@ begin
 end;
 $$;
 
--- Same PUBLIC-default gotcha as admin_search_visits above.
+-- Same PUBLIC- and Supabase-default gotcha as admin_search_visits above.
 revoke execute on function public.bulk_import_students from public;
+revoke execute on function public.bulk_import_students from anon;
 grant execute on function public.bulk_import_students to authenticated;

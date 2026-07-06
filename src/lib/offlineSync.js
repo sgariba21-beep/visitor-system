@@ -133,6 +133,12 @@ export function isDateMismatchError(error) {
   return error?.code === "P0003";
 }
 
+// isCancelledVisitError: errcode P0004 means the visitor cancelled this
+// registration themselves (see cancel_visit) — also never transient.
+export function isCancelledVisitError(error) {
+  return error?.code === "P0004";
+}
+
 async function sendMutation(item) {
   const { type, payload } = item;
   if (type === "check_in") {
@@ -182,4 +188,14 @@ export async function flushOutbox() {
 
 export function getOutboxCount() {
   return offlineDb.outbox.count();
+}
+
+// Surfaces outbox health to the UI — previously a permanently-failed
+// queued action (e.g. a check-in whose retry keeps erroring) sat silently
+// in IndexedDB forever with no on-screen indication that it never landed,
+// even though the staff member who triggered it was shown "success".
+export async function getOutboxSummary() {
+  const pending = await offlineDb.outbox.where("status").anyOf(["pending", "syncing"]).count();
+  const failed = await offlineDb.outbox.where("status").equals("failed").count();
+  return { pending, failed };
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import Spinner from "../../components/Spinner";
+import { QRCodeCanvas } from "qrcode.react";
 import { PURPOSE_OPTIONS as BASE_PURPOSE_OPTIONS } from "../../constants/visitOptions";
 
 const STATUS_OPTIONS = [
@@ -207,6 +208,11 @@ export default function VisitsPage() {
                 onToggle={() =>
                   setExpanded(prev => prev === visit.id ? null : visit.id)
                 }
+                onForceCheckout={async () => {
+                  const { error } = await supabase.rpc("admin_force_checkout", { p_visit_id: visit.id });
+                  if (error) { console.error("Force checkout failed:", error); return; }
+                  fetchVisits(page);
+                }}
               />
             ))}
           </div>
@@ -242,7 +248,10 @@ export default function VisitsPage() {
 
 // ─── Visit card component ─────────────────────────────────────────────────────
 // Shows a summary row; clicking expands to show full details
-function VisitCard({ visit, isExpanded, onToggle }) {
+function VisitCard({ visit, isExpanded, onToggle, onForceCheckout }) {
+  const [showQr, setShowQr] = useState(false);
+  const [forcingCheckout, setForcingCheckout] = useState(false);
+
   const purpose = visit.purpose === "Other"
     ? visit.purpose_other : visit.purpose;
 
@@ -250,6 +259,7 @@ function VisitCard({ visit, isExpanded, onToggle }) {
   const registeredAt = visit.registered_at  ? new Date(visit.registered_at)  : null;
   const checkedInAt  = visit.checked_in_at  ? new Date(visit.checked_in_at)  : null;
   const checkedOutAt = visit.checked_out_at ? new Date(visit.checked_out_at) : null;
+  const effectiveStatus = visit.cancelled_at ? "cancelled" : visit.status;
 
   function fmt(date) {
     if (!date) return "—";
@@ -267,10 +277,34 @@ function VisitCard({ visit, isExpanded, onToggle }) {
       : `${Math.floor(mins / 60)}h ${mins % 60}m`;
   }
 
+  // Resend link — same message pattern as RegisterPage's own share, just
+  // reusing the visit's existing qr_token rather than generating a new one.
+  const qrUrl = `${window.location.origin}/qr/${visit.qr_token}`;
+  const shareMessage =
+    `Hi ${visit.visitor_name}, here's your visit QR code again:\n${qrUrl}\n\n` +
+    `Show this to staff at the gate on ${formatDateShort(visit.visit_date)}.`;
+  const rawPhone = (visit.visitor_phone || "").replace(/\D/g, "");
+  const waPhone = rawPhone.startsWith("0") ? "233" + rawPhone.slice(1) : rawPhone;
+  const whatsappUrl = `https://wa.me/${waPhone}?text=${encodeURIComponent(shareMessage)}`;
+
+  async function handleForceCheckout(e) {
+    e.stopPropagation();
+    if (!window.confirm(
+      `Force-checkout ${visit.visitor_name}? Use this only if they left without ` +
+      `being scanned out at the gate.`
+    )) return;
+    setForcingCheckout(true);
+    try {
+      await onForceCheckout();
+    } finally {
+      setForcingCheckout(false);
+    }
+  }
+
   return (
     <div style={{
       ...cardStyles.card,
-      borderLeft: `4px solid ${statusColor(visit.status)}`,
+      borderLeft: `4px solid ${statusColor(effectiveStatus)}`,
     }}>
 
       {/* ── Summary row (always visible) ── */}
@@ -278,7 +312,7 @@ function VisitCard({ visit, isExpanded, onToggle }) {
         <div style={cardStyles.summaryLeft}>
           <div style={cardStyles.topRow}>
             <span style={cardStyles.visitorName}>{visit.visitor_name}</span>
-            <StatusBadge status={visit.status} />
+            <StatusBadge status={effectiveStatus} />
           </div>
           <p style={cardStyles.meta}>
             📞 {visit.visitor_phone}
@@ -334,6 +368,10 @@ function VisitCard({ visit, isExpanded, onToggle }) {
               {duration && (
                 <DetailRow label="Duration on campus" value={duration} />
               )}
+              {visit.checked_out_by && (
+                <DetailRow label="Checked out by"
+                  value={visit.checked_out_by === "admin" ? "Admin (forced)" : "Gate"} />
+              )}
             </DetailBlock>
 
             <DetailBlock title="Timestamps">
@@ -343,6 +381,41 @@ function VisitCard({ visit, isExpanded, onToggle }) {
             </DetailBlock>
 
           </div>
+
+          {/* ── Actions ── */}
+          <div style={cardStyles.actionsRow}>
+            <button
+              style={cardStyles.actionButton}
+              onClick={e => { e.stopPropagation(); setShowQr(prev => !prev); }}
+            >
+              {showQr ? "Hide QR" : "🔗 Show / Resend QR"}
+            </button>
+
+            {visit.status === "checked_in" && (
+              <button
+                style={{ ...cardStyles.actionButton, color: "#b91c1c", borderColor: "#fca5a5" }}
+                onClick={handleForceCheckout}
+                disabled={forcingCheckout}
+              >
+                {forcingCheckout ? "Working..." : "🚪 Force Check Out"}
+              </button>
+            )}
+          </div>
+
+          {showQr && (
+            <div style={cardStyles.qrPanel} onClick={e => e.stopPropagation()}>
+              <QRCodeCanvas value={visit.qr_token} size={140} level="H" includeMargin />
+              <p style={cardStyles.qrToken}>{visit.qr_token}</p>
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={cardStyles.whatsappLink}
+              >
+                💬 Share via WhatsApp
+              </a>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -383,6 +456,7 @@ function StatusBadge({ status }) {
     registered:  { label: "Not Arrived", bg: "#fef3c7", color: "#92400e" },
     checked_in:  { label: "On Campus",   bg: "#dcfce7", color: "#166534" },
     checked_out: { label: "Departed",    bg: "#f3f4f6", color: "#374151" },
+    cancelled:   { label: "Cancelled",   bg: "#fee2e2", color: "#991b1b" },
   };
   const c = config[status] || config.registered;
   return (
@@ -398,6 +472,7 @@ function StatusBadge({ status }) {
 function statusColor(status) {
   return status === "checked_in"  ? "#16a34a"
        : status === "checked_out" ? "#6b7280"
+       : status === "cancelled"   ? "#dc2626"
        : "#d97706";
 }
 
@@ -497,6 +572,29 @@ const cardStyles = {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
     gap: 20,
+  },
+  actionsRow: {
+    display: "flex", gap: 10, marginTop: 16,
+    paddingTop: 16, borderTop: "1px solid #f1f5f9",
+  },
+  actionButton: {
+    padding: "7px 14px", background: "#fff", color: "#374151",
+    border: "1.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer",
+    fontSize: 12, fontWeight: 600,
+  },
+  qrPanel: {
+    marginTop: 14, padding: 16, background: "#f8fafc",
+    borderRadius: 12, border: "1px dashed #cbd5e1",
+    display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+  },
+  qrToken: {
+    fontSize: 14, fontWeight: 700, letterSpacing: "0.1em",
+    color: "#0f172a", fontFamily: "monospace",
+  },
+  whatsappLink: {
+    display: "inline-block", marginTop: 4, padding: "8px 16px",
+    background: "#25D366", color: "#fff", borderRadius: 8,
+    fontSize: 13, fontWeight: 700, textDecoration: "none",
   },
 };
 

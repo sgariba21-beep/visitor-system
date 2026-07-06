@@ -5,7 +5,7 @@ import {
   withOfflineTimeout, warmCache, getCachedStudents, getCachedVisits,
   updateCachedVisit, lookupVisitByToken, enqueue, flushOutbox,
   getCachedPin, cacheConfirmedPin, clearCachedPin, isPinRejectedError,
-  isDateMismatchError,
+  isDateMismatchError, isCancelledVisitError, getOutboxSummary,
 } from "../lib/offlineSync";
 import { Html5Qrcode } from "html5-qrcode";
 import SchoolLogo from "../components/SchoolLogo";
@@ -27,7 +27,13 @@ export default function GatePage() {
 
   // ── Scanner state ───────────────────────────────────────────────────────────
   const [scannerError, setScannerError] = useState("");
+  const [scannerRetryIn, setScannerRetryIn] = useState(null); // seconds until auto-retry, or null
   const scannerRef = useRef(null); // holds the Html5Qrcode instance
+  const retryTimeoutRef = useRef(null);
+  const retryIntervalRef = useRef(null);
+
+  // ── Outbox health (pending/failed queued actions) ──────────────────────────
+  const [outboxStatus, setOutboxStatus] = useState({ pending: 0, failed: 0 });
 
   // ── Result state ────────────────────────────────────────────────────────────
   const [visitDoc, setVisitDoc]     = useState(null);  // full visit row (+ visit_students)
@@ -164,11 +170,20 @@ export default function GatePage() {
 
   // Periodically retry the outbox while the gate screen is active — covers
   // connections that report "online" but are actually too flaky for the
-  // live request to land.
+  // live request to land. Also refreshes the pending/failed badge so a
+  // permanently-failed queued action (e.g. a check-in whose retry keeps
+  // erroring) doesn't sit invisibly in IndexedDB forever after staff were
+  // shown a "success" message for it.
   useEffect(() => {
     if (screen === "pin") return;
-    flushOutbox();
-    const interval = setInterval(() => flushOutbox(), 15000);
+
+    async function tick() {
+      await flushOutbox();
+      setOutboxStatus(await getOutboxSummary());
+    }
+
+    tick();
+    const interval = setInterval(tick, 15000);
     return () => clearInterval(interval);
   }, [screen]);
 
@@ -313,11 +328,23 @@ export default function GatePage() {
   function showScanError(message) {
     setScannerError(message);
     setScreen("scanner");
-    // Restart the scanner after 3 seconds so staff can try again
-    setTimeout(() => {
-      setScannerError("");
-      startScanner();
-    }, 3000);
+    setScannerRetryIn(3);
+
+    retryIntervalRef.current = setInterval(() => {
+      setScannerRetryIn(prev => (prev && prev > 1) ? prev - 1 : 0);
+    }, 1000);
+
+    // Restart the scanner after 3 seconds so staff can try again — or
+    // immediately if they tap "Scan Again Now" (resumeScanning below).
+    retryTimeoutRef.current = setTimeout(resumeScanning, 3000);
+  }
+
+  function resumeScanning() {
+    clearTimeout(retryTimeoutRef.current);
+    clearInterval(retryIntervalRef.current);
+    setScannerError("");
+    setScannerRetryIn(null);
+    startScanner();
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -376,6 +403,16 @@ export default function GatePage() {
       setActionFeedback({
         type: "error",
         message: "This visit's date doesn't match today according to the server. Use manual lookup or contact the office.",
+      });
+      return;
+    }
+
+    if (isCancelledVisitError(result.error)) {
+      setVisitDoc(prev => ({ ...prev, status: "registered", cancelled_at: new Date().toISOString(), [timestampField]: null }));
+      await updateCachedVisit(visitDocId, { status: "registered", [timestampField]: null });
+      setActionFeedback({
+        type: "error",
+        message: "This visit was cancelled by the visitor — it can't be checked in.",
       });
       return;
     }
@@ -646,25 +683,48 @@ export default function GatePage() {
       {/* ── Offline banner ── */}
       {!isOnline && (
         <div style={styles.offlineBanner}>
-          ⚠️ You are offline. Recent visit data is available from cache.
-          Check-ins will sync automatically when connection returns.
+          ⚠️ You're offline. You can still scan and check in visitors —
+          everything will sync once you're back online.
         </div>
       )}
 
       {/* ── Cache status banner ── */}
       {isOnline && cacheStatus === "warming" && (
         <div style={{ ...styles.offlineBanner, background: "#1e3a5f", color: "#93c5fd" }}>
-          ⏳ Loading offline cache — please stay connected for a moment...
+          ⏳ Getting ready for offline use — please stay connected for a moment...
         </div>
       )}
       {isOnline && cacheStatus === "ready" && (
         <div style={{ ...styles.offlineBanner, background: "#14532d", color: "#86efac" }}>
-          ✅ Offline cache ready — safe to disconnect from WiFi
+          ✅ Ready to work offline — safe to disconnect from WiFi
         </div>
       )}
       {cacheStatus === "failed" && (
         <div style={{ ...styles.offlineBanner, background: "#78350f", color: "#fef3c7" }}>
-          ⚠️ Cache not loaded — stay connected or reconnect WiFi before going offline
+          ⚠️ Not ready for offline use yet — stay connected or reconnect WiFi before going offline
+        </div>
+      )}
+
+      {/* ── Outbox health banner ── */}
+      {/* A queued check-in/check-out/walk-in that keeps failing to sync
+          previously sat invisibly in IndexedDB forever, even though staff
+          saw a "success" message when they triggered it. */}
+      {(outboxStatus.pending > 0 || outboxStatus.failed > 0) && (
+        <div
+          style={{
+            ...styles.offlineBanner,
+            background: outboxStatus.failed > 0 ? "#7f1d1d" : "#1e3a5f",
+            color: outboxStatus.failed > 0 ? "#fecaca" : "#93c5fd",
+            cursor: "pointer",
+          }}
+          onClick={async () => {
+            await flushOutbox();
+            setOutboxStatus(await getOutboxSummary());
+          }}
+        >
+          {outboxStatus.failed > 0
+            ? `⚠️ ${outboxStatus.failed} action${outboxStatus.failed === 1 ? "" : "s"} failed to sync — tap to retry`
+            : `⏳ ${outboxStatus.pending} action${outboxStatus.pending === 1 ? "" : "s"} waiting to sync`}
         </div>
       )}
 
@@ -764,6 +824,19 @@ export default function GatePage() {
           {scannerError ? (
             <div style={styles.scannerError}>
               ⚠️ {scannerError}
+              <div style={styles.scannerRetryRow}>
+                {/* Only show a countdown when a retry is actually scheduled
+                    (showScanError) — a camera-permission failure sets
+                    scannerError directly with nothing queued to retry. */}
+                {scannerRetryIn !== null && (
+                  <span>
+                    {scannerRetryIn > 0 ? `Retrying in ${scannerRetryIn}...` : "Retrying..."}
+                  </span>
+                )}
+                <button style={styles.scanAgainBtn} onClick={resumeScanning}>
+                  Scan Again Now
+                </button>
+              </div>
             </div>
           ) : (
             <p style={styles.scannerHint}>
@@ -788,7 +861,7 @@ export default function GatePage() {
 
             {/* Status badge at top */}
             <div style={styles.statusBadgeRow}>
-              <StatusBadge status={visitDoc.status} />
+              <StatusBadge status={visitDoc.cancelled_at ? "cancelled" : visitDoc.status} />
             </div>
 
             {/* Visitor info */}
@@ -854,7 +927,11 @@ export default function GatePage() {
             )}
 
             {/* Action button — changes based on current status */}
-            {visitDoc.status !== "checked_out" ? (
+            {visitDoc.cancelled_at ? (
+              <div style={styles.completeBox}>
+                🚫 This visit was cancelled by the visitor
+              </div>
+            ) : visitDoc.status !== "checked_out" ? (
               <button
                 style={{
                   ...styles.actionBtn,
@@ -1212,6 +1289,7 @@ function StatusBadge({ status }) {
     registered:  { label: "Not Arrived",   bg: "#fef3c7", color: "#92400e" },
     checked_in:  { label: "On Campus",     bg: "#dcfce7", color: "#166534" },
     checked_out: { label: "Departed",      bg: "#f3f4f6", color: "#374151" },
+    cancelled:   { label: "Cancelled",     bg: "#fee2e2", color: "#991b1b" },
   };
   const c = config[status] || config.registered;
   return (
@@ -1342,6 +1420,15 @@ const styles = {
     color: "#fca5a5", borderRadius: 10, padding: "12px 16px",
     fontSize: 14, marginTop: 16, maxWidth: 360,
     textAlign: "center", lineHeight: 1.5,
+  },
+  scannerRetryRow: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    gap: 12, marginTop: 10, fontSize: 12, color: "#fca5a5",
+  },
+  scanAgainBtn: {
+    padding: "5px 10px", background: "transparent",
+    border: "1px solid #991b1b", borderRadius: 6,
+    color: "#fca5a5", cursor: "pointer", fontSize: 12, fontWeight: 600,
   },
   scannerHint: {
     color: "#475569", fontSize: 13, marginTop: 16, textAlign: "center",
