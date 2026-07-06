@@ -148,7 +148,7 @@ Defined in `supabase/migrations/`, applied in order. Apply with the Supabase CLI
 
 ### `visit_students` (junction table)
 
-Normalizes the visit↔student relationship (a visit can have multiple students, e.g. siblings) instead of an embedded array. `student_id` is a nullable FK (`on delete set null`) so hard-deleting a student doesn't break visit history — `student_name`/`class` are denormalized snapshot columns that preserve the historical record regardless.
+Normalizes the visit↔student relationship (a visit can have multiple students, e.g. siblings) instead of an embedded array. `student_name`/`class` are denormalized snapshot columns, independent of the live `students` row. A trigger (`trg_prevent_delete_student_with_visits`) blocks permanently deleting any student who has at least one `visit_students` row — deactivate (`is_active = false`) instead. `student_id`'s `on delete set null` is a dormant fallback for that rule ever being removed; in normal operation a student with visit history can never reach that cascade.
 
 ### `gate_settings` (singleton)
 

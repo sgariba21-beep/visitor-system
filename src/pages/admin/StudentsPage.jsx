@@ -180,11 +180,15 @@ export default function StudentsPage() {
   }
 
   // ── Hard delete (permanent) ────────────────────────────────────────────────
+  // The database itself blocks this for any student with visit history
+  // (see the trg_prevent_delete_student_with_visits trigger) — permanent
+  // deletion only ever succeeds for a student who has never been visited.
+  // Anyone else must be deactivated instead.
   async function handleHardDelete(student) {
     if (!window.confirm(
-      `⚠️ PERMANENTLY delete ${student.name}? This cannot be undone. ` +
-      `Visit history is preserved (names and classes are kept on those records), ` +
-      `but this student can no longer be selected for new visits.`
+      `⚠️ PERMANENTLY delete ${student.name}? This cannot be undone, and only ` +
+      `works if they have no visit history — if they've ever been visited, ` +
+      `deactivate them instead.`
     )) return;
     // Second confirmation for destructive action
     if (!window.confirm(`Are you absolutely sure? This deletes all data for ${student.name}.`)) return;
@@ -194,8 +198,10 @@ export default function StudentsPage() {
       if (error) throw error;
       setStudents(prev => prev.filter(s => s.id !== student.id));
       showFeedback("success", `${student.name} permanently deleted.`);
-    } catch {
-      showFeedback("error", "Failed to delete student.");
+    } catch (err) {
+      showFeedback("error", err?.code === "P0010"
+        ? err.message
+        : "Failed to delete student.");
     }
   }
 
