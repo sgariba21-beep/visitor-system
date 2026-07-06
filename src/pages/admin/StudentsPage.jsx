@@ -231,37 +231,27 @@ export default function StudentsPage() {
 
   async function confirmCsvImport() {
     setImporting(true);
-    let added = 0;
-    let skipped = 0;
     try {
-      for (const row of csvRows) {
-        if (!row.name?.trim() || !row.class?.trim()) continue; // skip blank rows
-        const rowId = row.studentId?.trim() || "";
-        // Duplicate-ID rejection is enforced by the DB's partial unique index,
-        // including against rows inserted earlier in this same batch.
-        const { error } = await supabase.from("students").insert({
-          name:       row.name.trim(),
-          class:      row.class.trim(),
-          student_id: rowId || null,
-        });
-        if (error) {
-          if (error.code === "23505") {
-            skipped++;
-            continue;
-          }
-          throw error;
-        }
-        added++;
-      }
+      // One round trip for the whole batch instead of one insert per row —
+      // a few hundred rows previously meant a few hundred sequential HTTP
+      // calls with the tab held open. Duplicate-ID rows are skipped
+      // server-side (same partial-unique-index guard as before) without
+      // aborting the rest of the batch.
+      const rows = csvRows.map(row => ({
+        name: row.name, class: row.class, studentId: row.studentId,
+      }));
+      const { data, error } = await supabase.rpc("bulk_import_students", { p_rows: rows });
+      if (error) throw error;
+
       await loadStudents(); // Reload full list
-      const msg = skipped > 0
-        ? `Imported ${added} students. Skipped ${skipped} duplicate student ID(s).`
-        : `Imported ${added} students successfully.`;
-      showFeedback(skipped > 0 ? "error" : "success", msg);
+      const msg = data.skipped > 0
+        ? `Imported ${data.added} students. Skipped ${data.skipped} duplicate student ID(s).`
+        : `Imported ${data.added} students successfully.`;
+      showFeedback(data.skipped > 0 ? "error" : "success", msg);
       setMode("list");
       setCsvRows([]);
     } catch {
-      showFeedback("error", "Import failed partway. Check the Students list for partial data.");
+      showFeedback("error", "Import failed. Check the Students list for partial data.");
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";

@@ -4,6 +4,21 @@ import { QRCodeCanvas } from "qrcode.react";
 import SchoolLogo from "../components/SchoolLogo";
 import { PURPOSE_OPTIONS, RELATIONSHIP_OPTIONS } from "../constants/visitOptions";
 
+// A stable per-device identifier (not per-tab-session — localStorage, not
+// sessionStorage) so create_visit's rate limiter can throttle a spam burst
+// of registrations from one device without needing IP tracking or new
+// infrastructure. Trivially reset by clearing browser storage — this is a
+// lightweight deterrent sized to a single school's actual threat model,
+// not a defense against a determined distributed attacker.
+function getClientToken() {
+  let token = localStorage.getItem("registration_client_token");
+  if (!token) {
+    token = crypto.randomUUID();
+    localStorage.setItem("registration_client_token", token);
+  }
+  return token;
+}
+
 export default function RegisterPage() {
 
   // ── Form field state ────────────────────────────────────────────────────────
@@ -213,6 +228,7 @@ export default function RegisterPage() {
           class:        s.class,
         })),
         p_idempotency_key: idempotencyKey.current,
+        p_client_token: getClientToken(),
       });
 
       if (rpcError) throw rpcError;
@@ -234,8 +250,8 @@ export default function RegisterPage() {
 
     } catch (err) {
       console.error("Registration failed:", err);
-      if (err?.code === "P0006") {
-        setError(err.message); // "Visit date cannot be in the past" / "...too far in the future"
+      if (err?.code === "P0006" || err?.code === "P0008") {
+        setError(err.message); // date validity, or rate-limit message
       } else {
         setError("Registration failed. Please check your connection and try again.");
       }

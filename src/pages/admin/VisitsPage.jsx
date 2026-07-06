@@ -14,6 +14,8 @@ const STATUS_OPTIONS = [
 // used everywhere a purpose is actually recorded (RegisterPage, GatePage).
 const PURPOSE_OPTIONS = ["All Purposes", ...BASE_PURPOSE_OPTIONS];
 
+const PAGE_SIZE = 50;
+
 export default function VisitsPage() {
 
   // ── Filter state ───────────────────────────────────────────────────────────
@@ -22,32 +24,52 @@ export default function VisitsPage() {
   const [dateTo, setDateTo]       = useState(todayStr);
   const [statusFilter, setStatus] = useState("all");
   const [purposeFilter, setPurpose] = useState("All Purposes");
-  const [searchQuery, setSearch]  = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState(""); // debounced value actually sent to the server
+
+  // Debounce free-text search — date/status/purpose changes refetch
+  // immediately (infrequent, deliberate actions), but typing shouldn't
+  // fire a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   // ── Data state ─────────────────────────────────────────────────────────────
   const [visits, setVisits]     = useState([]);
+  const [counts, setCounts]     = useState({ total: 0, onCampus: 0, departed: 0, registered: 0 });
+  const [page, setPage]         = useState(0);
   const [loading, setLoading]   = useState(false);
   const [fetched, setFetched]   = useState(false); // has a fetch been run yet?
   const [expanded, setExpanded] = useState(null);  // expanded visit ID
 
-  // ── Fetch visits for the selected date range ───────────────────────────────
-  // useCallback memoizes this function so it doesn't re-create on every render
-  const fetchVisits = useCallback(async () => {
+  // ── Fetch a page of visits matching the current filters ───────────────────
+  // Filtering, pagination, and the free-text search (an OR across visits'
+  // own columns and the joined visit_students' student_name) all happen
+  // server-side via admin_search_visits — the whole matching set is never
+  // shipped to the browser, only the requested page plus status counts.
+  const fetchVisits = useCallback(async (targetPage = 0) => {
     setLoading(true);
     setFetched(false);
 
     try {
-      // Server-side date-range filtering on a real `date` column.
-      const { data, error } = await supabase
-        .from("visits")
-        .select("*, visit_students(*)")
-        .gte("visit_date", dateFrom)
-        .lte("visit_date", dateTo)
-        .order("visit_date", { ascending: false })
-        .order("registered_at", { ascending: false });
+      const { data, error } = await supabase.rpc("admin_search_visits", {
+        p_date_from: dateFrom,
+        p_date_to:   dateTo,
+        p_status:    statusFilter === "all" ? null : statusFilter,
+        p_purpose:   purposeFilter === "All Purposes" ? null : purposeFilter,
+        p_query:     searchQuery || null,
+        p_limit:     PAGE_SIZE,
+        p_offset:    targetPage * PAGE_SIZE,
+      });
 
       if (error) throw error;
-      setVisits(data);
+      setVisits(data.rows);
+      setCounts({
+        total: data.total, onCampus: data.on_campus,
+        departed: data.departed, registered: data.not_arrived,
+      });
+      setPage(targetPage);
 
     } catch (err) {
       console.error("Failed to fetch visits:", err);
@@ -55,45 +77,15 @@ export default function VisitsPage() {
       setLoading(false);
       setFetched(true);
     }
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, statusFilter, purposeFilter, searchQuery]);
 
-  // Fetch today's visits on first load
+  // Refetch (from page 0) whenever a filter changes
   useEffect(() => {
-    fetchVisits();
+    fetchVisits(0);
   }, [fetchVisits]);
 
-  // ── Client-side filtering (status, purpose, search) ────────────────────────
-  const filtered = visits.filter(v => {
-    // Status filter
-    if (statusFilter !== "all" && v.status !== statusFilter) return false;
-
-    // Purpose filter
-    if (purposeFilter !== "All Purposes") {
-      const vPurpose = v.purpose === "Other" ? "Other" : v.purpose;
-      if (vPurpose !== purposeFilter) return false;
-    }
-
-    // Text search — visitor name, phone, or student name
-    if (searchQuery.trim()) {
-      const lower = searchQuery.toLowerCase();
-      const matchesVisitor  = v.visitor_name?.toLowerCase().includes(lower);
-      const matchesPhone    = v.visitor_phone?.includes(searchQuery);
-      const matchesStudent  = v.visit_students?.some(s =>
-        s.student_name?.toLowerCase().includes(lower)
-      );
-      if (!matchesVisitor && !matchesPhone && !matchesStudent) return false;
-    }
-
-    return true;
-  });
-
-  // ── Summary counts for filtered results ───────────────────────────────────
-  const counts = {
-    total:      filtered.length,
-    onCampus:   filtered.filter(v => v.status === "checked_in").length,
-    departed:   filtered.filter(v => v.status === "checked_out").length,
-    registered: filtered.filter(v => v.status === "registered").length,
-  };
+  const rangeStart = counts.total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const rangeEnd    = Math.min(counts.total, page * PAGE_SIZE + visits.length);
 
   return (
     <div style={styles.page} className="admin-page">
@@ -165,15 +157,15 @@ export default function VisitsPage() {
           <label style={styles.filterLabel}>Search</label>
           <input
             style={styles.filterInput}
-            value={searchQuery}
-            onChange={e => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
             placeholder="Visitor name, phone, or student..."
           />
         </div>
 
         <button
           style={styles.fetchBtn}
-          onClick={fetchVisits}
+          onClick={() => fetchVisits(0)}
           disabled={loading}
         >
           {loading ? <Spinner size={16} color="#fff" /> : "Apply"}
@@ -196,7 +188,7 @@ export default function VisitsPage() {
         <div style={{ textAlign: "center", padding: 60 }}>
           <Spinner size={36} />
         </div>
-      ) : !fetched ? null : filtered.length === 0 ? (
+      ) : !fetched ? null : visits.length === 0 ? (
         <div style={styles.emptyState}>
           <p style={{ fontSize: 40, marginBottom: 12 }}>📭</p>
           <p style={{ fontWeight: 600, color: "#374151" }}>No visits found</p>
@@ -205,18 +197,43 @@ export default function VisitsPage() {
           </p>
         </div>
       ) : (
-        <div style={styles.visitList}>
-          {filtered.map(visit => (
-            <VisitCard
-              key={visit.id}
-              visit={visit}
-              isExpanded={expanded === visit.id}
-              onToggle={() =>
-                setExpanded(prev => prev === visit.id ? null : visit.id)
-              }
-            />
-          ))}
-        </div>
+        <>
+          <div style={styles.visitList}>
+            {visits.map(visit => (
+              <VisitCard
+                key={visit.id}
+                visit={visit}
+                isExpanded={expanded === visit.id}
+                onToggle={() =>
+                  setExpanded(prev => prev === visit.id ? null : visit.id)
+                }
+              />
+            ))}
+          </div>
+
+          {/* ── Pagination ── */}
+          <div style={styles.paginationBar}>
+            <span style={styles.paginationLabel}>
+              Showing {rangeStart}–{rangeEnd} of {counts.total}
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                style={styles.pageBtn}
+                onClick={() => fetchVisits(page - 1)}
+                disabled={page === 0 || loading}
+              >
+                ← Previous
+              </button>
+              <button
+                style={styles.pageBtn}
+                onClick={() => fetchVisits(page + 1)}
+                disabled={rangeEnd >= counts.total || loading}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        </>
       )}
 
     </div>
@@ -435,6 +452,17 @@ const styles = {
   },
 
   visitList: { display: "flex", flexDirection: "column", gap: 8 },
+
+  paginationBar: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    marginTop: 16, padding: "12px 4px",
+  },
+  paginationLabel: { fontSize: 13, color: "#6b7280" },
+  pageBtn: {
+    padding: "7px 14px", background: "#fff", color: "#374151",
+    border: "1.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer",
+    fontSize: 13, fontWeight: 600,
+  },
 };
 
 const cardStyles = {

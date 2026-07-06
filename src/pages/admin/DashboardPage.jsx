@@ -32,17 +32,30 @@ export default function DashboardPage() {
 
     fetchToday();
 
+    // Debounce refetches: a rush of gate scans/registrations fires many
+    // realtime events in quick succession, and refetching the full joined
+    // list on every single one scales as (open dashboard tabs) × (events
+    // that day) with no coalescing. Collecting events over a short window
+    // before firing one refetch keeps the same "just refetch, don't patch
+    // incrementally" simplicity while cutting redundant round-trips.
+    let debounceTimer = null;
+    const scheduleRefetch = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchToday, 600);
+    };
+
     const channel = supabase
       .channel("dashboard-visits")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "visits", filter: `visit_date=eq.${todayStr}` },
-        () => fetchToday()
+        scheduleRefetch
       )
       .subscribe();
 
     return () => {
       cancelled = true;
+      clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [todayStr]);
