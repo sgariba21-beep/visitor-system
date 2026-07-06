@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useNavigate } from "react-router-dom";
 import Spinner from "../components/Spinner";
@@ -9,21 +9,60 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
+  const [lockedUntil, setLockedUntil] = useState(null); // Date or null
+  const [lockRemaining, setLockRemaining] = useState(0); // seconds left
   const navigate = useNavigate();
+
+  // Live countdown while this email is locked out (3 wrong tries).
+  useEffect(() => {
+    if (!lockedUntil) return;
+    const tick = () => {
+      const secs = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setLockRemaining(secs);
+      if (secs <= 0) setLockedUntil(null);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [lockedUntil]);
 
   async function handleLogin(e) {
     e.preventDefault();           // Prevent page reload on form submit
     setError("");
+
+    if (lockedUntil) return; // still cooling down
+
     setLoading(true);
 
     try {
+      // Locked by email (not by device), tracked server-side so a page
+      // refresh can't reset the count — checked before even attempting
+      // the real sign-in.
+      const { data: status } = await supabase.rpc("login_attempt_status", { p_email: email });
+      if (status?.locked) {
+        setLockedUntil(new Date(status.locked_until));
+        setError("Too many failed attempts.");
+        return;
+      }
+
       const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      const { data: result } = await supabase.rpc("record_login_result", {
+        p_email: email,
+        p_success: !signInError,
+      });
+
       if (signInError) {
-        setError(
-          signInError.message.includes("Invalid login credentials")
-            ? "Invalid email or password."
-            : "Something went wrong. Please try again."
-        );
+        if (result?.locked) {
+          setLockedUntil(new Date(result.locked_until));
+          setError("Too many failed attempts.");
+        } else {
+          const remaining = result?.attempts_remaining;
+          setError(
+            signInError.message.includes("Invalid login credentials")
+              ? `Invalid email or password.${remaining != null ? ` ${remaining} attempt(s) remaining.` : ""}`
+              : "Something went wrong. Please try again."
+          );
+        }
         return;
       }
       navigate("/admin/students"); // Redirect to admin panel on success
@@ -66,9 +105,14 @@ export default function LoginPage() {
           </div>
 
           {error && <p style={styles.error}>{error}</p>}
+          {lockedUntil && (
+            <p style={styles.error}>
+              Try again in {Math.floor(lockRemaining / 60)}:{String(lockRemaining % 60).padStart(2, "0")}
+            </p>
+          )}
 
-          <button style={styles.button} type="submit" disabled={loading}>
-            {loading ? <Spinner size={18} color="#fff" /> : "Sign In"}
+          <button style={styles.button} type="submit" disabled={loading || !!lockedUntil}>
+            {loading ? <Spinner size={18} color="#fff" /> : lockedUntil ? "Locked" : "Sign In"}
           </button>
         </form>
       </div>

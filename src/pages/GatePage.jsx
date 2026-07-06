@@ -10,9 +10,11 @@ import {
 import { Html5Qrcode } from "html5-qrcode";
 import SchoolLogo from "../components/SchoolLogo";
 import { PURPOSE_OPTIONS, RELATIONSHIP_OPTIONS } from "../constants/visitOptions";
+import { useInactivityLogout } from "../hooks/useInactivityLogout";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export default function GatePage() {
 
@@ -24,6 +26,21 @@ export default function GatePage() {
   const [pinInput, setPinInput]   = useState("");
   const [pinError, setPinError]   = useState("");
   const [pinSubmitting, setPinSubmitting] = useState(false);
+  const [pinLockedUntil, setPinLockedUntil] = useState(null); // Date or null
+  const [pinLockRemaining, setPinLockRemaining] = useState(0); // seconds left
+
+  // Live countdown while the gate PIN is locked out (3 wrong tries).
+  useEffect(() => {
+    if (!pinLockedUntil) return;
+    const tick = () => {
+      const secs = Math.max(0, Math.ceil((pinLockedUntil - Date.now()) / 1000));
+      setPinLockRemaining(secs);
+      if (secs <= 0) setPinLockedUntil(null);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [pinLockedUntil]);
 
   // ── Scanner state ───────────────────────────────────────────────────────────
   const [scannerError, setScannerError] = useState("");
@@ -82,6 +99,7 @@ export default function GatePage() {
   // confirmed-correct PIN, cached locally in cacheConfirmedPin() below.
   async function handlePinSubmit(e) {
     e.preventDefault();
+    if (pinLockedUntil) return; // still cooling down
     setPinError("");
     setPinSubmitting(true);
 
@@ -89,19 +107,28 @@ export default function GatePage() {
       const result = await withOfflineTimeout(supabase.rpc("verify_gate_pin", { p_pin: pinInput }));
 
       if (result.ok) {
-        if (result.data === true) {
+        // verify_gate_pin returns {ok, locked, locked_until?, attempts_remaining?}
+        // — never the real PIN, and now tracks a 3-try/5-minute lockout
+        // server-side so it can't be bypassed by retrying directly.
+        const status = result.data;
+        if (status.locked) {
+          setPinLockedUntil(new Date(status.locked_until));
+          setPinError("Too many incorrect PINs.");
+          setPinInput("");
+        } else if (status.ok) {
           await cacheConfirmedPin(pinInput);
           sessionStorage.setItem("gate_pin", pinInput);
           setScreen("scanner");
         } else {
-          setPinError("Incorrect PIN. Please try again.");
+          setPinError(`Incorrect PIN. ${status.attempts_remaining} attempt(s) remaining.`);
           setPinInput("");
         }
         return;
       }
 
       // Offline / request timed out — fall back to the last PIN this
-      // device itself confirmed correct while online.
+      // device itself confirmed correct while online. The lockout is only
+      // enforced by the server, so it doesn't apply to this fallback path.
       const cached = await getCachedPin();
       if (cached && pinInput === cached) {
         sessionStorage.setItem("gate_pin", pinInput);
@@ -124,6 +151,19 @@ export default function GatePage() {
       setScreen("scanner");
     }
   }, []);
+
+  // Shared by the Sign Out button and the inactivity timeout below.
+  function signOutOfGate() {
+    sessionStorage.removeItem("gate_pin");
+    setScreen("pin");
+  }
+
+  // Auto sign-out after 5 minutes of no mouse/keyboard/touch/scroll
+  // activity — an unlocked gate device previously stayed unlocked
+  // indefinitely once someone had entered the PIN once.
+  useInactivityLogout(INACTIVITY_TIMEOUT_MS, () => {
+    if (screen !== "pin") signOutOfGate();
+  });
 
   // If a background outbox retry finds the cached PIN has been rotated
   // (errcode P0005), the local session is no longer valid — clear it so
@@ -757,14 +797,8 @@ export default function GatePage() {
           </div>
         )}
         {screen !== "pin" && (
-          <button
-            style={styles.lockBtn}
-            onClick={() => {
-              sessionStorage.removeItem("gate_pin");
-              setScreen("pin");
-            }}
-          >
-            🔒
+          <button style={styles.signOutBtn} onClick={signOutOfGate}>
+            🔓 Sign Out
           </button>
         )}
 
@@ -796,10 +830,20 @@ export default function GatePage() {
                 onChange={e => setPinInput(e.target.value)}
                 placeholder="••••"
                 autoFocus
+                disabled={!!pinLockedUntil}
               />
               {pinError && <p style={styles.pinError}>{pinError}</p>}
-              <button type="submit" style={styles.btnPrimary} disabled={pinSubmitting}>
-                {pinSubmitting ? "Checking..." : "Unlock Gate"}
+              {pinLockedUntil && (
+                <p style={styles.pinError}>
+                  Try again in {Math.floor(pinLockRemaining / 60)}:{String(pinLockRemaining % 60).padStart(2, "0")}
+                </p>
+              )}
+              <button
+                type="submit"
+                style={styles.btnPrimary}
+                disabled={pinSubmitting || !!pinLockedUntil}
+              >
+                {pinSubmitting ? "Checking..." : pinLockedUntil ? "Locked" : "Unlock Gate"}
               </button>
             </form>
           </div>
@@ -1368,9 +1412,11 @@ const styles = {
     borderRadius: 8, color: "#94a3b8", cursor: "pointer",
     fontSize: 13, fontWeight: 500,
   },
-  lockBtn: {
-    background: "transparent", border: "none",
-    fontSize: 18, cursor: "pointer",
+  signOutBtn: {
+    background: "transparent", border: "1px solid #334155",
+    borderRadius: 8, padding: "6px 12px", cursor: "pointer",
+    fontSize: 13, fontWeight: 600, color: "#f87171",
+    display: "flex", alignItems: "center", gap: 4,
   },
   installBtn: {
     padding: "6px 12px", background: "#2563eb", color: "#fff",

@@ -2,7 +2,10 @@ import { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
 import { useAuth } from "../../hooks/useAuth";
+import { useInactivityLogout } from "../../hooks/useInactivityLogout";
 import SchoolLogo from "../../components/SchoolLogo";
+
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 const navItems = [
   { to: "/admin/dashboard", label: "Dashboard",     icon: "📊" },
@@ -48,6 +51,11 @@ export default function AdminLayout() {
     await supabase.auth.signOut();
     navigate("/login");
   }
+
+  // Auto sign-out after 5 minutes of no mouse/keyboard/touch/scroll
+  // activity — an admin session left open on a shared or public computer
+  // previously stayed signed in indefinitely.
+  useInactivityLogout(INACTIVITY_TIMEOUT_MS, handleLogout);
 
   function closeSidebar() {
     setSidebarOpen(false);
