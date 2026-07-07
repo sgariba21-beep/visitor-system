@@ -1,20 +1,27 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import Papa from "papaparse";
 import Spinner from "../../components/Spinner";
 
 // ─── Possible UI modes ───────────────────────────────────────────────────────
-// "list"   → default view, shows all students
+// "list"   → default view, shows a page of students
 // "add"    → inline form to add one student
 // "edit"   → inline form to edit a student
 // "import" → CSV import panel
 
+const PAGE_SIZE = 50;
+
 export default function StudentsPage() {
-  const [students, setStudents]   = useState([]);
+  const [students, setStudents]   = useState([]);   // current page only
+  const [matchingCount, setMatchingCount] = useState(0); // total matching the current search
+  const [totalCount, setTotalCount]   = useState(0); // whole roster, independent of search
+  const [activeCount, setActiveCount] = useState(0); // whole roster, independent of search
+  const [page, setPage]           = useState(0);
   const [loading, setLoading]     = useState(true);
   const [mode, setMode]           = useState("list");
   const [editTarget, setEditTarget] = useState(null); // student being edited
-  const [search, setSearch]       = useState("");
+  const [searchInput, setSearchInput] = useState(""); // what's typed, unbounced
+  const [search, setSearch]       = useState("");     // debounced value actually queried
   const [feedback, setFeedback]   = useState(null);  // { type, message }
 
   // Form state (shared between add and edit)
@@ -25,24 +32,63 @@ export default function StudentsPage() {
   const [importing, setImporting]   = useState(false);
   const fileInputRef                = useRef();
 
-  // ── Load students from Firestore on mount ──────────────────────────────────
+  // Debounce search — typing now drives a server-side query (needed so the
+  // fetch itself stays bounded), not just an in-browser filter.
   useEffect(() => {
-    loadStudents();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const timer = setTimeout(() => setSearch(searchInput.trim()), 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
-  async function loadStudents() {
+  // ── Load one page of students matching the current search ─────────────────
+  // Previously this fetched the entire roster in one unbounded query and
+  // filtered/rendered it all client-side — fine for a small school, but a
+  // roster of hundreds-to-thousands of students would ship the whole table
+  // to the browser on every visit to this page. Filtering and paging both
+  // happen server-side now, so only the requested page is ever fetched.
+  const loadStudents = useCallback(async (targetPage = 0) => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.from("students").select("*").order("name");
+      let query = supabase.from("students").select("*", { count: "exact" });
+      if (search) {
+        const q = `%${search}%`;
+        query = query.or(`name.ilike.${q},class.ilike.${q},student_id.ilike.${q}`);
+      }
+      const from = targetPage * PAGE_SIZE;
+      const { data, error, count } = await query
+        .order("name")
+        .range(from, from + PAGE_SIZE - 1);
+
       if (error) throw error;
       setStudents(data);
+      setMatchingCount(count ?? 0);
+      setPage(targetPage);
     } catch (err) {
       showFeedback("error", "Failed to load students.");
     } finally {
       setLoading(false);
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  // Refetch (from page 0) whenever the search changes
+  useEffect(() => {
+    loadStudents(0);
+  }, [loadStudents]);
+
+  // Roster-wide counts for the header subtitle — independent of the current
+  // search/page, so they always reflect the whole school, not just a filtered view.
+  const loadCounts = useCallback(async () => {
+    const [{ count: total }, { count: active }] = await Promise.all([
+      supabase.from("students").select("*", { count: "exact", head: true }),
+      supabase.from("students").select("*", { count: "exact", head: true }).eq("is_active", true),
+    ]);
+    setTotalCount(total ?? 0);
+    setActiveCount(active ?? 0);
+  }, []);
+
+  useEffect(() => {
+    loadCounts();
+  }, [loadCounts]);
 
   // Looks up who already holds a given Student ID, for a friendlier
   // duplicate-ID error message than the raw DB constraint gives us.
@@ -87,11 +133,11 @@ export default function StudentsPage() {
     if (!form.name.trim() || !form.class.trim()) return;
 
     try {
-      const { data, error } = await supabase.from("students").insert({
+      const { error } = await supabase.from("students").insert({
         name:       form.name.trim(),
         class:      form.class.trim(),
         student_id: form.studentId.trim() || null,
-      }).select().single();
+      });
 
       if (error) {
         if (error.code === "23505") {
@@ -105,9 +151,9 @@ export default function StudentsPage() {
         throw error;
       }
 
-      setStudents(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
       showFeedback("success", `${form.name} added successfully.`);
       setMode("list");
+      await Promise.all([loadStudents(page), loadCounts()]);
     } catch {
       showFeedback("error", "Failed to add student.");
     }
@@ -118,11 +164,11 @@ export default function StudentsPage() {
     e.preventDefault();
 
     try {
-      const { data, error } = await supabase.from("students").update({
+      const { error } = await supabase.from("students").update({
         name:       form.name.trim(),
         class:      form.class.trim(),
         student_id: form.studentId.trim() || null,
-      }).eq("id", editTarget.id).select().single();
+      }).eq("id", editTarget.id);
 
       if (error) {
         if (error.code === "23505") {
@@ -136,9 +182,9 @@ export default function StudentsPage() {
         throw error;
       }
 
-      setStudents(prev => prev.map(s => (s.id === editTarget.id ? data : s)));
       showFeedback("success", `${form.name} updated.`);
       setMode("list");
+      await loadStudents(page);
     } catch {
       showFeedback("error", "Failed to update student.");
     }
@@ -156,10 +202,8 @@ export default function StudentsPage() {
     try {
       const { error } = await supabase.from("students").update({ is_active: false }).eq("id", student.id);
       if (error) throw error;
-      setStudents(prev => prev.map(s =>
-        s.id === student.id ? { ...s, is_active: false } : s
-      ));
       showFeedback("success", `${student.name} deactivated.`);
+      await Promise.all([loadStudents(page), loadCounts()]);
     } catch {
       showFeedback("error", "Failed to deactivate student.");
     }
@@ -170,10 +214,8 @@ export default function StudentsPage() {
     try {
       const { error } = await supabase.from("students").update({ is_active: true }).eq("id", student.id);
       if (error) throw error;
-      setStudents(prev => prev.map(s =>
-        s.id === student.id ? { ...s, is_active: true } : s
-      ));
       showFeedback("success", `${student.name} reactivated.`);
+      await Promise.all([loadStudents(page), loadCounts()]);
     } catch {
       showFeedback("error", "Failed to reactivate.");
     }
@@ -196,8 +238,8 @@ export default function StudentsPage() {
     try {
       const { error } = await supabase.from("students").delete().eq("id", student.id);
       if (error) throw error;
-      setStudents(prev => prev.filter(s => s.id !== student.id));
       showFeedback("success", `${student.name} permanently deleted.`);
+      await Promise.all([loadStudents(page), loadCounts()]);
     } catch (err) {
       showFeedback("error", err?.code === "P0010"
         ? err.message
@@ -221,7 +263,7 @@ export default function StudentsPage() {
         const missing  = required.filter(r => !headers.includes(r));
 
         if (missing.length > 0) {
-          showFeedback("error", 
+          showFeedback("error",
             `CSV missing columns: ${missing.join(", ")}. ` +
             `Required: name, class. Optional: studentId`
           );
@@ -249,13 +291,13 @@ export default function StudentsPage() {
       const { data, error } = await supabase.rpc("bulk_import_students", { p_rows: rows });
       if (error) throw error;
 
-      await loadStudents(); // Reload full list
       const msg = data.skipped > 0
         ? `Imported ${data.added} students. Skipped ${data.skipped} duplicate student ID(s).`
         : `Imported ${data.added} students successfully.`;
       showFeedback(data.skipped > 0 ? "error" : "success", msg);
       setMode("list");
       setCsvRows([]);
+      await Promise.all([loadStudents(0), loadCounts()]);
     } catch {
       showFeedback("error", "Import failed. Check the Students list for partial data.");
     } finally {
@@ -264,12 +306,8 @@ export default function StudentsPage() {
     }
   }
 
-  // ── Filtered student list (by search query) ────────────────────────────────
-  const filtered = students.filter(s =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.class.toLowerCase().includes(search.toLowerCase()) ||
-    (s.student_id || "").toLowerCase().includes(search.toLowerCase())
-  );
+  const rangeStart = matchingCount === 0 ? 0 : page * PAGE_SIZE + 1;
+  const rangeEnd    = Math.min(matchingCount, page * PAGE_SIZE + students.length);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -279,7 +317,7 @@ export default function StudentsPage() {
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Students</h1>
-          <p style={styles.subtitle}>{students.length} total · {students.filter(s => s.is_active).length} active</p>
+          <p style={styles.subtitle}>{totalCount} total · {activeCount} active</p>
         </div>
         <div style={styles.headerActions}>
           {/* Hidden file input triggered by the Import button */}
@@ -406,8 +444,8 @@ export default function StudentsPage() {
         <input
           style={{ ...styles.input, marginBottom: 16, maxWidth: 360 }}
           placeholder="🔍  Search by name, class, or ID..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={e => setSearchInput(e.target.value)}
         />
       )}
 
@@ -417,75 +455,102 @@ export default function StudentsPage() {
           <Spinner size={36} />
         </div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={styles.th}>Name</th>
-                <th style={styles.th}>Class</th>
-                <th style={styles.th}>ID</th>
-                <th style={styles.th}>Status</th>
-                <th style={styles.th}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
+        <>
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.table}>
+              <thead>
                 <tr>
-                  <td colSpan={5} style={{ ...styles.td, textAlign: "center", 
-                                           color: "#9ca3af", padding: 32 }}>
-                    {search ? "No students match your search." : "No students yet. Add one above."}
-                  </td>
+                  <th style={styles.th}>Name</th>
+                  <th style={styles.th}>Class</th>
+                  <th style={styles.th}>ID</th>
+                  <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Actions</th>
                 </tr>
-              ) : (
-                filtered.map(student => (
-                  <tr key={student.id} style={{
-                    opacity: student.is_active ? 1 : 0.5,
-                    background: student.is_active ? "transparent" : "#f9fafb"
-                  }}>
-                    <td style={styles.td}>{student.name}</td>
-                    <td style={styles.td}>{student.class}</td>
-                    <td style={styles.td}>{student.student_id || "—"}</td>
-                    <td style={styles.td}>
-                      <span style={{
-                        ...styles.badge,
-                        background: student.is_active ? "#dcfce7" : "#f3f4f6",
-                        color:      student.is_active ? "#166534" : "#6b7280",
-                      }}>
-                        {student.is_active ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                    <td style={{ ...styles.td, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <button style={styles.actionBtn} onClick={() => openEdit(student)}>
-                        ✏️ Edit
-                      </button>
-                      {student.is_active ? (
-                        <button
-                          style={{ ...styles.actionBtn, color: "#d97706" }}
-                          onClick={() => handleSoftDelete(student)}
-                        >
-                          🔒 Deactivate
-                        </button>
-                      ) : (
-                        <button
-                          style={{ ...styles.actionBtn, color: "#2563eb" }}
-                          onClick={() => handleReactivate(student)}
-                        >
-                          🔓 Reactivate
-                        </button>
-                      )}
-                      <button
-                        style={{ ...styles.actionBtn, color: "#dc2626" }}
-                        onClick={() => handleHardDelete(student)}
-                      >
-                        🗑️ Delete
-                      </button>
+              </thead>
+              <tbody>
+                {students.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} style={{ ...styles.td, textAlign: "center",
+                                             color: "#9ca3af", padding: 32 }}>
+                      {search ? "No students match your search." : "No students yet. Add one above."}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ) : (
+                  students.map(student => (
+                    <tr key={student.id} style={{
+                      opacity: student.is_active ? 1 : 0.5,
+                      background: student.is_active ? "transparent" : "#f9fafb"
+                    }}>
+                      <td style={styles.td}>{student.name}</td>
+                      <td style={styles.td}>{student.class}</td>
+                      <td style={styles.td}>{student.student_id || "—"}</td>
+                      <td style={styles.td}>
+                        <span style={{
+                          ...styles.badge,
+                          background: student.is_active ? "#dcfce7" : "#f3f4f6",
+                          color:      student.is_active ? "#166534" : "#6b7280",
+                        }}>
+                          {student.is_active ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td style={{ ...styles.td, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <button style={styles.actionBtn} onClick={() => openEdit(student)}>
+                          ✏️ Edit
+                        </button>
+                        {student.is_active ? (
+                          <button
+                            style={{ ...styles.actionBtn, color: "#d97706" }}
+                            onClick={() => handleSoftDelete(student)}
+                          >
+                            🔒 Deactivate
+                          </button>
+                        ) : (
+                          <button
+                            style={{ ...styles.actionBtn, color: "#2563eb" }}
+                            onClick={() => handleReactivate(student)}
+                          >
+                            🔓 Reactivate
+                          </button>
+                        )}
+                        <button
+                          style={{ ...styles.actionBtn, color: "#dc2626" }}
+                          onClick={() => handleHardDelete(student)}
+                        >
+                          🗑️ Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Pagination ── */}
+          {mode === "list" && matchingCount > 0 && (
+            <div style={styles.paginationBar}>
+              <span style={styles.paginationLabel}>
+                Showing {rangeStart}–{rangeEnd} of {matchingCount}
+              </span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  style={styles.pageBtn}
+                  onClick={() => loadStudents(page - 1)}
+                  disabled={page === 0}
+                >
+                  ← Previous
+                </button>
+                <button
+                  style={styles.pageBtn}
+                  onClick={() => loadStudents(page + 1)}
+                  disabled={rangeEnd >= matchingCount}
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -494,7 +559,7 @@ export default function StudentsPage() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = {
   page:    { padding: 32, maxWidth: 1100, margin: "0 auto" },
-  header:  { display: "flex", justifyContent: "space-between", 
+  header:  { display: "flex", justifyContent: "space-between",
              alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap", gap: 12 },
   title:   { fontSize: 26, fontWeight: 700, color: "#0f172a" },
   subtitle:{ fontSize: 14, color: "#6b7280", marginTop: 2 },
@@ -503,9 +568,9 @@ const styles = {
   formCard:    { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12,
                  padding: 24, marginBottom: 24 },
   formTitle:   { fontSize: 17, fontWeight: 600, color: "#0f172a", marginBottom: 20 },
-  formGrid:    { display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", 
+  formGrid:    { display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto",
                  gap: 16, alignItems: "end" },
-  formActions: { display: "flex", gap: 10, justifyContent: "flex-end", 
+  formActions: { display: "flex", gap: 10, justifyContent: "flex-end",
                  gridColumn: "1 / -1" },
 
   field:  { display: "flex", flexDirection: "column", gap: 6 },
@@ -517,7 +582,7 @@ const styles = {
               marginBottom: 16, fontSize: 14 },
 
   table: { width: "100%", borderCollapse: "collapse", background: "#fff",
-           borderRadius: 12, overflow: "hidden", 
+           borderRadius: 12, overflow: "hidden",
            boxShadow: "0 1px 3px rgba(0,0,0,0.07)" },
   th:    { padding: "12px 16px", textAlign: "left", fontSize: 12,
            fontWeight: 600, color: "#6b7280", background: "#f9fafb",
@@ -529,15 +594,26 @@ const styles = {
   badge: { padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600 },
 
   actionBtn:    { padding: "5px 10px", fontSize: 12, background: "transparent",
-                  border: "1px solid #e5e7eb", borderRadius: 6, 
+                  border: "1px solid #e5e7eb", borderRadius: 6,
                   cursor: "pointer", color: "#374151" },
   btnPrimary:   { padding: "9px 18px", background: "#2563eb", color: "#fff",
                   border: "none", borderRadius: 8, cursor: "pointer",
                   fontSize: 14, fontWeight: 600, display: "flex",
                   alignItems: "center", gap: 6 },
   btnSecondary: { padding: "9px 18px", background: "#fff", color: "#374151",
-                  border: "1.5px solid #d1d5db", borderRadius: 8, 
+                  border: "1.5px solid #d1d5db", borderRadius: 8,
                   cursor: "pointer", fontSize: 14, fontWeight: 500 },
   btnGhost:     { padding: "9px 18px", background: "transparent", color: "#6b7280",
                   border: "none", cursor: "pointer", fontSize: 14 },
+
+  paginationBar: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    marginTop: 16, padding: "12px 4px",
+  },
+  paginationLabel: { fontSize: 13, color: "#6b7280" },
+  pageBtn: {
+    padding: "7px 14px", background: "#fff", color: "#374151",
+    border: "1.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer",
+    fontSize: 13, fontWeight: 600,
+  },
 };

@@ -15,6 +15,11 @@ import { useInactivityLogout } from "../hooks/useInactivityLogout";
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SCANNER_DIV_ID = "qr-reader"; // html5-qrcode needs a div with a known ID
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+// Manual search results are capped rather than paginated — this is a
+// find-one-specific-visitor-quickly tool used while someone waits at the
+// gate, not a browsing list, so a big match count should prompt a more
+// specific search rather than paging through candidates.
+const MANUAL_RESULTS_LIMIT = 20;
 
 export default function GatePage() {
 
@@ -1091,7 +1096,7 @@ export default function GatePage() {
                 {/* Search results */}
                 {manualResults.length > 0 && (
                   <div style={styles.manualResultsList}>
-                    {manualResults.map(visit => (
+                    {manualResults.slice(0, MANUAL_RESULTS_LIMIT).map(visit => (
                       <div
                         key={visit.id}
                         style={styles.manualResultItem}
@@ -1121,6 +1126,12 @@ export default function GatePage() {
                         </div>
                       </div>
                     ))}
+                    {manualResults.length > MANUAL_RESULTS_LIMIT && (
+                      <p style={styles.manualResultsMore}>
+                        Showing {MANUAL_RESULTS_LIMIT} of {manualResults.length} matches —
+                        refine your search for a more specific result.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1565,6 +1576,10 @@ const styles = {
   },
   manualResultsList: {
     display: "flex", flexDirection: "column", gap: 8,
+  },
+  manualResultsMore: {
+    fontSize: 12, color: "#64748b", textAlign: "center",
+    padding: "8px 4px 0",
   },
   manualResultItem: {
     background: "#1a2942", borderRadius: 10, padding: "12px 14px",
