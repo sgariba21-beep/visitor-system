@@ -57,7 +57,9 @@ export default function RegisterPage() {
     verificationSessionId.current = sid;
   }
 
-  // Live countdown while ID search is locked out (3 wrong guesses / 5 min).
+  // Live countdown while ID search is locked out. Cooldown length is set
+  // server-side and escalates within this browser session (1 min, 3 min,
+  // 5 min, ... — see search_student_by_id), so it isn't hardcoded here.
   useEffect(() => {
     if (!lockedUntil) return;
     const tick = () => {
