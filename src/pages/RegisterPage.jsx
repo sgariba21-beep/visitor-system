@@ -30,23 +30,23 @@ export default function RegisterPage() {
   const [purposeOther, setPurposeOther] = useState(""); // shown only when purpose = "Other"
 
   // ── Student search state ────────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery]         = useState("");
-  const [searchResults, setSearchResults]     = useState([]);
   const [selectedStudents, setSelectedStudents] = useState([]); // array of student objects
-  const [searching, setSearching]             = useState(false);
-  const searchTimeout                         = useRef(null);   // for debouncing
   const qrWrapperRef                          = useRef(null);   // for QR canvas image export
 
-  // ── Student ID verification state ────────────────────────────────────────────
-  // The actual comparison and attempt counting happen server-side (see
-  // verify_student_id) — this component never sees the real student_id.
-  // verificationSessionId is stable across a page refresh (sessionStorage)
-  // so a lockout can't be trivially reset by reloading the page.
-  const [pendingStudent, setPendingStudent] = useState(null);  // student awaiting ID verification
+  // ── Student ID search state ─────────────────────────────────────────────────
+  // Students are looked up directly by Student ID (never by name) — knowing
+  // the ID is itself the proof the visitor is entitled to add that student,
+  // so there's no separate confirmation step. The actual comparison and
+  // attempt counting happen server-side (see search_student_by_id) — this
+  // component never sees or searches by the real student_id. sessionId is
+  // stable across a page refresh (sessionStorage) so a lockout can't be
+  // trivially reset by reloading the page.
   const [idInput, setIdInput]               = useState("");    // what the visitor typed
   const [idError, setIdError]               = useState("");    // per-attempt error message
-  const [verifying, setVerifying]           = useState(false);
-  const [lockedOut, setLockedOut]           = useState(false); // true once the server reports locked
+  const [verifying, setVerifying]           = useState(false); // search in flight
+  const [lockedUntil, setLockedUntil]       = useState(null);  // Date or null
+  const [lockRemaining, setLockRemaining]   = useState(0);     // seconds left
+  const lockedOut = !!lockedUntil;
   const verificationSessionId = useRef(null);
   if (!verificationSessionId.current) {
     let sid = sessionStorage.getItem("id_verify_session");
@@ -56,6 +56,19 @@ export default function RegisterPage() {
     }
     verificationSessionId.current = sid;
   }
+
+  // Live countdown while ID search is locked out (3 wrong guesses / 5 min).
+  useEffect(() => {
+    if (!lockedUntil) return;
+    const tick = () => {
+      const secs = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setLockRemaining(secs);
+      if (secs <= 0) setLockedUntil(null);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [lockedUntil]);
 
   // ── Page state ──────────────────────────────────────────────────────────────
   const [submitting, setSubmitting]   = useState(false);
@@ -90,108 +103,48 @@ export default function RegisterPage() {
   // Parents can only pick today or a future date
   const today = new Date().toISOString().split("T")[0]; // "2025-04-05"
 
-  // ── Student search with debounce ────────────────────────────────────────────
-  // Debounce means: don't fire a Firestore query on every single keypress.
-  // Wait until the user stops typing for 400ms, THEN search.
-  useEffect(() => {
-    if (searchQuery.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
-
-    // Clear any existing timer
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-
-    // Set a new timer
-    searchTimeout.current = setTimeout(() => {
-      performSearch(searchQuery.trim());
-    }, 400);
-
-    // Cleanup timer if component unmounts or query changes again
-    return () => clearTimeout(searchTimeout.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
-
-  async function performSearch(queryText) {
-    setSearching(true);
-    try {
-      // Server-side search — never returns the real student_id, only
-      // whether one is configured (has_student_id).
-      const { data, error } = await supabase.rpc("search_active_students", { p_query: queryText });
-      if (error) throw error;
-
-      // Remove already-selected students from results
-      const selectedIds = selectedStudents.map(s => s.id);
-      setSearchResults((data || []).filter(s => !selectedIds.includes(s.id)));
-
-    } catch (err) {
-      console.error("Search failed:", err);
-    } finally {
-      setSearching(false);
-    }
-  }
-
-  // ── Add a student to the selected list (now requires ID verification) ──────
-  function selectStudent(student) {
-    if (lockedOut) return;
-
-    // Block students without a student_id configured
-    if (!student.has_student_id) {
-      setError("This student does not have a Student ID configured. Please contact the school.");
-      setSearchQuery("");
-      setSearchResults([]);
-      return;
-    }
-
-    // Open verification prompt instead of adding immediately
-    setPendingStudent(student);
-    setIdInput("");
-    setIdError("");
-    setSearchQuery("");
-    setSearchResults([]);
-  }
-
-  // ── Verify the student ID the visitor typed ────────────────────────────────
+  // ── Find a student by ID and add them ───────────────────────────────────────
   // The comparison and attempt count live entirely server-side (see
-  // verify_student_id) — this page never learns the real student_id.
-  async function verifyStudentId() {
-    if (!pendingStudent || verifying) return;
+  // search_student_by_id) — this page never learns or searches by the real
+  // student_id, and a match is only ever exact (never a fuzzy/partial one),
+  // so there's no way to narrow down a guess result-by-result.
+  async function findStudentById(e) {
+    e?.preventDefault();
+    if (lockedOut || verifying) return;
+
+    const guess = idInput.trim();
+    if (!guess) return;
+
     setVerifying(true);
+    setIdError("");
 
     try {
-      const { data, error } = await supabase.rpc("verify_student_id", {
+      const { data, error } = await supabase.rpc("search_student_by_id", {
         p_session_id: verificationSessionId.current,
-        p_student_row_id: pendingStudent.id,
-        p_guess: idInput,
+        p_guess: guess,
       });
       if (error) throw error;
 
       if (data.ok) {
-        setSelectedStudents(prev => [...prev, pendingStudent]);
-        setPendingStudent(null);
+        const student = data.student;
+        setSelectedStudents(prev =>
+          prev.some(s => s.id === student.id) ? prev : [...prev, student]
+        );
         setIdInput("");
         setIdError("");
       } else if (data.locked) {
-        setLockedOut(true);
-        setPendingStudent(null);
+        setLockedUntil(new Date(data.locked_until));
         setIdInput("");
         setIdError("");
       } else {
-        setIdError(`Incorrect Student ID. ${data.attempts_remaining} attempt(s) remaining.`);
-        setIdInput("");
+        setIdError(`No student found with that ID. ${data.attempts_remaining} attempt(s) remaining.`);
       }
     } catch (err) {
-      console.error("Verification failed:", err);
-      setIdError("Could not verify right now. Check your connection and try again.");
+      console.error("Student ID search failed:", err);
+      setIdError("Could not search right now. Check your connection and try again.");
     } finally {
       setVerifying(false);
     }
-  }
-
-  function cancelVerification() {
-    setPendingStudent(null);
-    setIdInput("");
-    setIdError("");
   }
 
   // ── Remove a student from the selected list ─────────────────────────────────
@@ -283,14 +236,11 @@ export default function RegisterPage() {
     setPurpose("");
     setPurposeOther("");
     setSelectedStudents([]);
-    setSearchQuery("");
-    setSearchResults([]);
     setSuccessData(null);
     setError("");
-    // Note: lockedOut is intentionally left as-is — it reflects the
+    // Note: lockedUntil is intentionally left as-is — it reflects the
     // server-tracked verification session, which "register another"
     // doesn't reset (the same real lockout still applies).
-    setPendingStudent(null);
     setIdInput("");
     setIdError("");
     // A fresh registration needs a fresh idempotency key — reusing the
@@ -615,102 +565,46 @@ export default function RegisterPage() {
             {/* Lockout banner */}
             {lockedOut && (
               <div style={styles.lockoutBox}>
-                Registration locked due to too many failed verification attempts.
-                Please visit the school office for assistance.
+                Too many attempts. Try again in{" "}
+                {Math.floor(lockRemaining / 60)}:{String(lockRemaining % 60).padStart(2, "0")}.
               </div>
             )}
 
-            {/* Student ID verification prompt */}
-            {pendingStudent && !lockedOut && (
-              <div style={styles.verifyBox}>
-                <p style={styles.verifyTitle}>
-                  Verify Student Identity
-                </p>
-                <p style={styles.verifyInfo}>
-                  You selected <strong>{pendingStudent.name}</strong> ({pendingStudent.class}).
-                  Please enter their Student ID to confirm.
-                </p>
-                <input
-                  style={styles.input}
-                  value={idInput}
-                  onChange={e => setIdInput(e.target.value)}
-                  placeholder="Enter Student ID..."
-                  autoFocus
-                  onKeyDown={e => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      verifyStudentId();
-                    }
-                  }}
-                />
+            {/* Student ID lookup */}
+            {!lockedOut && (
+              <Field label="Student ID *">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    style={styles.input}
+                    value={idInput}
+                    onChange={e => setIdInput(e.target.value)}
+                    placeholder="Enter Student ID..."
+                    autoComplete="off"
+                    disabled={verifying}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        findStudentById();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    style={{ ...styles.btnVerify, opacity: (verifying || !idInput.trim()) ? 0.6 : 1 }}
+                    onClick={findStudentById}
+                    disabled={verifying || !idInput.trim()}
+                  >
+                    {verifying ? "Searching..." : "Add"}
+                  </button>
+                </div>
                 {idError && (
                   <p style={styles.verifyError}>{idError}</p>
                 )}
-                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                  <button type="button" style={styles.btnCancel} onClick={cancelVerification} disabled={verifying}>
-                    Cancel
-                  </button>
-                  <button type="button" style={styles.btnVerify} onClick={verifyStudentId} disabled={verifying}>
-                    {verifying ? "Checking..." : "Verify"}
-                  </button>
-                </div>
-              </div>
+              </Field>
             )}
 
-            {/* Search input */}
-            <Field label="Search for a student">
-              <div style={{ position: "relative" }}>
-                <input
-                  style={{
-                    ...styles.input,
-                    ...(lockedOut || pendingStudent ? { opacity: 0.5, pointerEvents: "none" } : {}),
-                  }}
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Type student name or class..."
-                  autoComplete="off"
-                  disabled={lockedOut || !!pendingStudent}
-                />
-
-                {/* Dropdown results */}
-                {(searchResults.length > 0 || searching) && (
-                  <div style={styles.dropdown}>
-                    {searching ? (
-                      <div style={styles.dropdownMsg}>Searching...</div>
-                    ) : (
-                      searchResults.map(student => (
-                        <div
-                          key={student.id}
-                          style={styles.dropdownItem}
-                          onClick={() => selectStudent(student)}
-                          onMouseEnter={e => e.currentTarget.style.background = "#eff6ff"}
-                          onMouseLeave={e => e.currentTarget.style.background = "#fff"}
-                        >
-                          <span style={{ fontWeight: 600 }}>{student.name}</span>
-                          <span style={{ color: "#6b7280", fontSize: 13 }}>
-                            {" "}· {student.class}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-
-                {/* No results message */}
-                {searchQuery.trim().length >= 2 &&
-                  !searching &&
-                  searchResults.length === 0 && (
-                  <div style={styles.dropdown}>
-                    <div style={styles.dropdownMsg}>
-                      No students found. Check the name or contact the school.
-                    </div>
-                  </div>
-                )}
-              </div>
-            </Field>
-
             <p style={styles.hint}>
-              💡 Search for a student, then verify their Student ID to add them.
+              💡 Enter the Student ID given to you by the school to add a student.
               You can add multiple students one at a time.
             </p>
 
@@ -924,43 +818,10 @@ const styles = {
     fontSize: 14, padding: 0, lineHeight: 1,
   },
 
-  // Dropdown
-  dropdown: {
-    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
-    background: "#fff", border: "1.5px solid #e5e7eb",
-    borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
-    zIndex: 100, overflow: "hidden",
-  },
-  dropdownItem: {
-    padding: "11px 14px", cursor: "pointer",
-    borderBottom: "1px solid #f3f4f6",
-    fontSize: 14, transition: "background 0.1s",
-    background: "#fff",
-  },
-  dropdownMsg: {
-    padding: "12px 14px", color: "#9ca3af",
-    fontSize: 13, textAlign: "center",
-  },
-
   hint: { fontSize: 13, color: "#9ca3af", marginTop: 8 },
 
-  // Verification prompt
-  verifyBox: {
-    background: "#fff7ed", border: "1.5px solid #fed7aa",
-    borderRadius: 12, padding: "16px 18px", marginBottom: 16,
-  },
-  verifyTitle: {
-    fontSize: 15, fontWeight: 700, color: "#9a3412", marginBottom: 6,
-  },
-  verifyInfo: {
-    fontSize: 13, color: "#78350f", marginBottom: 12, lineHeight: 1.5,
-  },
   verifyError: {
     color: "#dc2626", fontSize: 13, marginTop: 8, fontWeight: 500,
-  },
-  btnCancel: {
-    padding: "8px 16px", background: "transparent", border: "1px solid #d1d5db",
-    borderRadius: 8, color: "#6b7280", cursor: "pointer", fontSize: 13,
   },
   btnVerify: {
     padding: "8px 16px", background: "#2563eb", color: "#fff",
