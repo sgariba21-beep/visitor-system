@@ -6,6 +6,14 @@ Built with **React 19** and **Supabase (Postgres)**, with a hand-rolled offline-
 
 ---
 
+## Screenshots
+
+A walkthrough of every page — parent pre-registration, the QR visit pass, the offline-first gate hub (PIN unlock, QR scan, manual lookup, check-in, walk-in), and the admin area (dashboard, students, visit history, settings) — lives in [`images/`](images/).
+
+> ⚠️ **The names, phone numbers, and student IDs in these screenshots are dummy data.** They were entered purely to populate the interface for the captures and do not correspond to any real visitor, student, or staff member. The demo records were deleted afterwards.
+
+---
+
 ## Features
 
 ### For Parents / Visitors
